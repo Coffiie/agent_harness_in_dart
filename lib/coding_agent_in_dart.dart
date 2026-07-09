@@ -15,19 +15,26 @@ String input() {
 }
 
 void main(List<String> arguments) async {
-  final modelName = 'gemini-2.5-flash';
+  final conversation = <String>[];
+
+  final modelName = 'gemini-3.1-flash-lite';
   print(divider());
   print('Chat with $modelName: (press ctrl-c to exit)');
   print(divider());
 
   while (true) {
     final prompt = input();
+    conversation.add("You: $prompt");
 
-    await callModel(modelName, prompt);
+    await callModel(modelName, prompt, conversation);
   }
 }
 
-Future<void> callModel(String modelName, String prompt) async {
+Future<void> callModel(
+  String modelName,
+  String prompt,
+  List<String> conversation,
+) async {
   // fetch api key from environment variable setup in the terminal
   final apiKey = Platform.environment['GEMINI_API_KEY'] ?? '';
 
@@ -41,11 +48,16 @@ Future<void> callModel(String modelName, String prompt) async {
 
   try {
     // create a content instance
-    final content = [Content.text(prompt)];
+    final content = conversation.map((c) => Content.text(c)).toList();
     final response = await model.generateContent(content);
 
+    final responseWithModelName = "$modelName: ${response.text}";
+
     // print the response
-    print("$modelName: ${response.text}");
+    print(responseWithModelName);
+
+    //add response to chat history
+    conversation.add(responseWithModelName);
   } catch (e) {
     print('Error generating content: $e');
   }
