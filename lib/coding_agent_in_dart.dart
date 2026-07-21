@@ -26,15 +26,15 @@ void main(List<String> arguments) async {
   final conversation = <Content>[];
   final toolResults = <FunctionResponse>[];
 
-  //create the function & tool for read_file
-  final readFileFunctionDec = FunctionDeclaration(
+  //create a function declaration for read_file
+  FunctionDeclaration readFileFunctionDec = _createFuncDeclaration(
     'readFile',
     'Read the contents of a file from a given path',
     Schema.string(description: 'the path of the file', nullable: false),
   );
-  final tools = [
-    Tool(functionDeclarations: [readFileFunctionDec]),
-  ];
+
+  //add function declarations to tools that will be given to model on model load
+  List<Tool> tools = addFuncDeclarationToTools([readFileFunctionDec]);
 
   final modelName = 'gemini-3.1-flash-lite';
   print(divider());
@@ -50,6 +50,31 @@ void main(List<String> arguments) async {
 
     await callModel(model, modelName, conversation, tools, toolResults);
   }
+}
+
+// takes function declarations
+// returns tools with those declarations that are fed to the model
+// (depends on Gemini API for now)
+List<Tool> addFuncDeclarationToTools(List<FunctionDeclaration> declarations) {
+  final tools = declarations
+      .map((d) => Tool(functionDeclarations: [d]))
+      .toList();
+
+  return tools;
+}
+
+// creates function declaration (depends on Gemini API for now)
+FunctionDeclaration _createFuncDeclaration(
+  String name,
+  String description,
+  Schema? parameters,
+) {
+  final readFileFunctionDec = FunctionDeclaration(
+    name,
+    description,
+    parameters,
+  );
+  return readFileFunctionDec;
 }
 
 Future<void> callModel(
@@ -88,7 +113,7 @@ Future<void> callModel(
 
 //reads file given a path
 Future<FunctionResponse> readFile(String path) async {
-  print('Called readFile');
+  print('Called readFile....');
 
   // Create a reference to the file location
   final file = File(path);
