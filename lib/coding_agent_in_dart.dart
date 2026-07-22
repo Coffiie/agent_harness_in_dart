@@ -24,7 +24,6 @@ void main(List<String> arguments) async {
   }
 
   final conversation = <Content>[];
-  final toolResults = <FunctionResponse>[];
 
   //create a function declaration for read_file
   FunctionDeclaration readFileFunctionDec = _createFuncDeclaration(
@@ -48,7 +47,7 @@ void main(List<String> arguments) async {
     final prompt = input();
     conversation.add(Content('user', [TextPart(prompt)]));
 
-    await callModel(model, modelName, conversation, tools, toolResults);
+    await callModel(model, modelName, conversation, tools);
   }
 }
 
@@ -82,7 +81,6 @@ Future<void> callModel(
   String modelName,
   List<Content> conversation,
   List<Tool> tools,
-  List<FunctionResponse> toolResults,
 ) async {
   try {
     while (true) {
