@@ -32,8 +32,17 @@ void main(List<String> arguments) async {
     Schema.string(description: 'the path of the file', nullable: false),
   );
 
+  FunctionDeclaration listFilesFunctionDec = _createFuncDeclaration(
+    'listFiles',
+    'List the contents of a directory from a given path, if no path is provided, list the contents of the current directory',
+    Schema.string(description: 'the path of the directory', nullable: true),
+  );
+
   //add function declarations to tools that will be given to model on model load
-  List<Tool> tools = addFuncDeclarationToTools([readFileFunctionDec]);
+  List<Tool> tools = addFuncDeclarationToTools([
+    readFileFunctionDec,
+    listFilesFunctionDec,
+  ]);
 
   final modelName = 'gemini-3.1-flash-lite';
   print(divider());
@@ -46,7 +55,6 @@ void main(List<String> arguments) async {
   while (true) {
     final prompt = input();
     conversation.add(Content('user', [TextPart(prompt)]));
-
     await callModel(model, modelName, conversation, tools);
   }
 }
@@ -102,6 +110,12 @@ Future<void> callModel(
           conversation.add(Content('user', [response]));
           continue;
         }
+        if (function.name == 'listFiles') {
+          //call listFiles
+          final response = await listFiles(function.args['path'].toString());
+          conversation.add(Content('user', [response]));
+          continue;
+        }
       }
     }
   } catch (e) {
@@ -109,9 +123,24 @@ Future<void> callModel(
   }
 }
 
+//lists files given a path
+Future<FunctionResponse> listFiles(String? path) async {
+  print('ListFiles(path: $path)');
+
+  final toolName = 'listFiles';
+
+  final directory = path == null ? Directory.current : Directory(path);
+  final files = directory.listSync();
+
+  print('Files: ${files.map((e) => e.path).toList()}');
+  return FunctionResponse(toolName, {
+    'files': files.map((e) => e.path).toList(),
+  });
+}
+
 //reads file given a path
 Future<FunctionResponse> readFile(String path) async {
-  print('Called readFile....');
+  print('ReadFile(path: $path)');
 
   // Create a reference to the file location
   final file = File(path);
@@ -121,6 +150,8 @@ Future<FunctionResponse> readFile(String path) async {
   try {
     // Read the full file contents asynchronously
     String contents = await file.readAsString();
+
+    print('Contents: $contents');
 
     return FunctionResponse(toolName, {'content': contents});
   } catch (e) {
