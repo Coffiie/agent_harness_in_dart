@@ -132,7 +132,6 @@ Future<FunctionResponse> listFiles(String? path) async {
   final directory = path == null ? Directory.current : Directory(path);
   final files = directory.listSync();
 
-  print('Files: ${files.map((e) => e.path).toList()}');
   return FunctionResponse(toolName, {
     'files': files.map((e) => e.path).toList(),
   });
@@ -150,8 +149,6 @@ Future<FunctionResponse> readFile(String path) async {
   try {
     // Read the full file contents asynchronously
     String contents = await file.readAsString();
-
-    print('Contents: $contents');
 
     return FunctionResponse(toolName, {'content': contents});
   } catch (e) {
