@@ -6,6 +6,10 @@ String divider() {
   return '-' * 20;
 }
 
+String toolSeparator() {
+  return '┃';
+}
+
 String input() {
   stdout.write('${divider()}\n');
   stdout.write('You: ');
@@ -125,7 +129,7 @@ Future<void> callModel(
 
 //lists files given a path
 Future<FunctionResponse> listFiles(String? path) async {
-  print('ListFiles(path: $path)');
+  print('${toolSeparator()} ListFiles(path: $path)\n');
 
   final toolName = 'listFiles';
 
@@ -139,7 +143,7 @@ Future<FunctionResponse> listFiles(String? path) async {
 
 //reads file given a path
 Future<FunctionResponse> readFile(String path) async {
-  print('ReadFile(path: $path)');
+  print('${toolSeparator()} ReadFile(path: $path)\n');
 
   // Create a reference to the file location
   final file = File(path);
