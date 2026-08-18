@@ -50,6 +50,25 @@ final List<Map<String, dynamic>> _tools = [
           },
         },
       },
+      {
+        'name': 'updateFile',
+        'description':
+            'Update the contents of the file given a path and contents',
+        'parameters': {
+          'type': 'OBJECT',
+          'properties': {
+            'path': {
+              'type': 'STRING',
+              'description': 'the path of the directory',
+            },
+            'content': {
+              'type': 'STRING',
+              'description': 'the new contents of the file',
+            },
+          },
+          'required': ['path', 'content'],
+        },
+      },
     ],
   },
 ];
@@ -148,6 +167,8 @@ Future<Map<String, dynamic>> _executeFunction(
       return _readFile(args['path'] as String);
     case 'listFiles':
       return _listFiles(args['path'] as String?);
+    case 'updateFile':
+      return _updateFile(args['path'] as String, args['content'] as String);
     default:
       return {'error': 'Unknown function: $name'};
   }
@@ -174,6 +195,19 @@ Future<Map<String, dynamic>> _readFile(String path) async {
     return {'content': contents};
   } catch (e) {
     return {'error': e.toString()};
+  }
+}
+
+//update file contents from a given path and content
+Future<Map<String, dynamic>> _updateFile(String path, content) async {
+  print('${toolSeparator()} UpdateFile(path: $path)\n');
+
+  try {
+    final file = File(path);
+    await file.writeAsString(content);
+    return {'status': 'success'};
+  } catch (e) {
+    return {'status': 'error', 'message': e.toString()};
   }
 }
 
