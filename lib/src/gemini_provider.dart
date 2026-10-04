@@ -3,11 +3,12 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'messages.dart';
+import 'model_provider.dart';
 import 'tools.dart';
 
 const _baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-class GeminiProvider {
+class GeminiProvider implements ModelProvider {
   GeminiProvider(
     this._apiKey, {
     this.model = 'gemini-3.1-flash-lite',
@@ -18,6 +19,7 @@ class GeminiProvider {
   final http.Client _client;
   final String model;
 
+  @override
   Future<Message> generate(
     List<Message> messages, {
     List<Tool> tools = const [],
@@ -52,6 +54,7 @@ class GeminiProvider {
     ], raw: content);
   }
 
+  @override
   Future<int> countTokens(List<Message> messages) async {
     final response = await _post('countTokens', {
       'contents': messages.map(_toContent).toList(),
