@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
@@ -75,6 +77,42 @@ void main() {
       await tester.pump();
 
       expect(tester.terminalState, isNot(containsText('> hello')));
+    });
+  });
+
+  test('draws the diff of a file edit under the tool line', () async {
+    final dir = Directory.systemTemp.createTempSync();
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/a.txt';
+    File(path).writeAsStringSync('one\ntwo\nthree\n');
+
+    await testNocterm('diff', (tester) async {
+      await tester.pumpComponent(
+        HarnessApp(
+          provider: FakeProvider([
+            Message(Role.assistant, [
+              ToolCall('updateFile', {
+                'path': path,
+                'content': 'one\n2\nthree\n',
+              }),
+            ]),
+            say('done'),
+          ]),
+          model: 'fake',
+        ),
+      );
+
+      await tester.enterText('edit it');
+      await tester.sendEnter();
+      await tester.pump();
+
+      expect(tester.terminalState, containsText('┃ UpdateFile(path: '));
+      expect(tester.terminalState, containsText('1   one'));
+      expect(tester.terminalState, containsText('2 - two'));
+      expect(tester.terminalState, containsText('2 + 2'));
+      expect(tester.terminalState, containsText('3   three'));
+      await tester.pump();
+      expect(File(path).readAsStringSync(), 'one\n2\nthree\n');
     });
   });
 }

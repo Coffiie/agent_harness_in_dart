@@ -1,3 +1,5 @@
+import 'diff.dart';
+
 sealed class AgentEvent {
   const AgentEvent();
 }
@@ -9,9 +11,10 @@ class AssistantText extends AgentEvent {
 }
 
 class ToolStarted extends AgentEvent {
-  const ToolStarted(this.label);
+  const ToolStarted(this.label, {this.diff = const []});
 
   final String label;
+  final List<DiffLine> diff;
 }
 
 class CompactionStarted extends AgentEvent {

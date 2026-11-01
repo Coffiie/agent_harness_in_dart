@@ -46,7 +46,10 @@ class Agent {
             continue;
           }
 
-          yield ToolStarted(tool.label(call.args));
+          yield ToolStarted(
+            tool.label(call.args),
+            diff: tool.diff?.call(call.args) ?? const [],
+          );
           results.add(ToolResult(call.name, await tool.run(call.args)));
         }
 

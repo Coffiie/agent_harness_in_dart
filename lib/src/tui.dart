@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:nocterm/nocterm.dart';
 
 import 'agent.dart';
+import 'diff.dart';
 import 'events.dart';
 import 'model_provider.dart';
 import 'tools.dart';
@@ -13,6 +15,10 @@ const _text = Color.fromRGB(243, 237, 230);
 const _muted = Color.fromRGB(169, 178, 176);
 const _ok = Color.fromRGB(167, 207, 194);
 const _bad = Color.fromRGB(229, 120, 107);
+const _addedBg = Color.fromRGB(33, 66, 45);
+const _removedBg = Color.fromRGB(84, 36, 36);
+
+const _maxDiffLines = 14;
 
 const _spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -204,9 +210,12 @@ class _HarnessAppState extends State<HarnessApp> {
           Expanded(child: MarkdownText(text.trim())),
         ],
       ),
-      ToolStarted(:final label) => Text(
-        '┃ $label',
-        style: const TextStyle(color: _ok),
+      ToolStarted(:final label, :final diff) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('┃ $label', style: const TextStyle(color: _ok)),
+          ..._diff(diff),
+        ],
       ),
       CompactionStarted() => const Text(
         '┃ Summarizing conversation…',
@@ -221,5 +230,39 @@ class _HarnessAppState extends State<HarnessApp> {
         style: const TextStyle(color: _bad),
       ),
     };
+  }
+
+  List<Component> _diff(List<DiffLine> diff) {
+    final width = diff.fold(0, (w, line) => max(w, '${line.number}'.length));
+    return [
+      for (final line in diff.take(_maxDiffLines)) _diffLine(line, width),
+      if (diff.length > _maxDiffLines)
+        Padding(
+          padding: const EdgeInsets.only(left: 2),
+          child: Text(
+            '… +${diff.length - _maxDiffLines} lines',
+            style: const TextStyle(color: _muted),
+          ),
+        ),
+    ];
+  }
+
+  Component _diffLine(DiffLine line, int width) {
+    final number = '${line.number}'.padLeft(width);
+    final (text, background) = switch (line.change) {
+      Change.added => ('$number + ${line.text}', _addedBg),
+      Change.removed => ('$number - ${line.text}', _removedBg),
+      Change.same => ('$number   ${line.text}', null),
+      Change.skipped => ('⋮'.padLeft(width), null),
+    };
+
+    return Container(
+      margin: const EdgeInsets.only(left: 2),
+      color: background,
+      child: Text(
+        text.replaceAll('\t', '  '),
+        style: TextStyle(color: background == null ? _muted : _text),
+      ),
+    );
   }
 }

@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'diff.dart';
+
 class Tool {
   Tool({
     required this.name,
@@ -7,6 +9,7 @@ class Tool {
     required this.parameters,
     required this.label,
     required this.run,
+    this.diff,
   });
 
   final String name;
@@ -14,6 +17,9 @@ class Tool {
   final Map<String, dynamic> parameters;
   final String Function(Map<String, dynamic> args) label;
   final Future<Map<String, dynamic>> Function(Map<String, dynamic> args) run;
+
+  /// What [run] is about to change, worked out by the harness, not the model.
+  final List<DiffLine> Function(Map<String, dynamic> args)? diff;
 }
 
 final fileTools = [
@@ -59,6 +65,7 @@ final fileTools = [
     },
     label: (args) => 'UpdateFile(path: ${args['path']})',
     run: (args) => _updateFile(args['path'] as String, args['content']),
+    diff: (args) => _fileDiff(args['path'], args['content']),
   ),
 ];
 
@@ -80,6 +87,19 @@ Future<Map<String, dynamic>> _readFile(String path) async {
     return {'content': contents};
   } catch (e) {
     return {'error': e.toString()};
+  }
+}
+
+//diffs the file on disk against the contents about to be written
+List<DiffLine> _fileDiff(Object? path, Object? content) {
+  if (path is! String || content is! String) return const [];
+  if (FileSystemEntity.isDirectorySync(path)) return const [];
+  try {
+    final file = File(path);
+    final before = file.existsSync() ? file.readAsStringSync() : '';
+    return diffLines(before, content);
+  } catch (_) {
+    return const [];
   }
 }
 
