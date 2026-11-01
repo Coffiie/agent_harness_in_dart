@@ -105,6 +105,27 @@ void main() {
     });
   });
 
+  test('sends the system prompt as systemInstruction', () async {
+    respond(
+      reply([
+        {'text': 'hi'},
+      ]),
+    );
+
+    await gemini.generate([hello], system: 'be brief');
+    await gemini.generate([hello]);
+
+    expect(jsonDecode(requests.first.body)['systemInstruction'], {
+      'parts': [
+        {'text': 'be brief'},
+      ],
+    });
+    expect(
+      jsonDecode(requests.last.body),
+      isNot(contains('systemInstruction')),
+    );
+  });
+
   test('reads text and function calls from the reply', () async {
     respond(
       reply([

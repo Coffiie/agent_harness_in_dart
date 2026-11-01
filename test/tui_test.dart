@@ -11,12 +11,17 @@ class FakeProvider implements ModelProvider {
   FakeProvider(this.replies);
 
   final List<Message> replies;
+  final systems = <String?>[];
 
   @override
   Future<Message> generate(
     List<Message> messages, {
     List<Tool> tools = const [],
-  }) async => replies.removeAt(0);
+    String? system,
+  }) async {
+    systems.add(system);
+    return replies.removeAt(0);
+  }
 
   @override
   Future<int> countTokens(List<Message> messages) async => messages.length;
@@ -114,5 +119,20 @@ void main() {
       await tester.pump();
       expect(File(path).readAsStringSync(), 'one\n2\nthree\n');
     });
+  });
+
+  test('tells the model the diff is already on screen', () async {
+    final provider = FakeProvider([say('hi')]);
+
+    await testNocterm('system prompt', (tester) async {
+      await tester.pumpComponent(HarnessApp(provider: provider, model: 'fake'));
+
+      await tester.enterText('hello');
+      await tester.sendEnter();
+      await tester.pump();
+    });
+
+    expect(provider.systems, [systemPrompt]);
+    expect(systemPrompt, contains('Never write a diff'));
   });
 }

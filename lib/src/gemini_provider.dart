@@ -23,8 +23,15 @@ class GeminiProvider implements ModelProvider {
   Future<Message> generate(
     List<Message> messages, {
     List<Tool> tools = const [],
+    String? system,
   }) async {
     final response = await _post('generateContent', {
+      if (system != null)
+        'systemInstruction': {
+          'parts': [
+            {'text': system},
+          ],
+        },
       'contents': messages.map(_toContent).toList(),
       if (tools.isNotEmpty)
         'tools': [

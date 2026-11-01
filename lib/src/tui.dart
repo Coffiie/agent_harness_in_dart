@@ -20,6 +20,19 @@ const _removedBg = Color.fromRGB(84, 36, 36);
 
 const _maxDiffLines = 14;
 
+// The TUI draws the harness's own diff under every file edit (see _diff), so
+// the model is told not to write one.
+const systemPrompt =
+    'You are a coding agent running in a terminal UI. You can list, read and '
+    'update files with your tools. Every time you call updateFile, the UI '
+    'shows the user an exact diff of the change, worked out from the file on '
+    'disk, right under the tool call. Never write a diff, a patch or lines '
+    'marked with + and - yourself, in any reply, even when the user asks to '
+    'see the diff or the changes: that diff is already on screen, so point '
+    'them to it. Do not paste the code you just wrote unless the user asks '
+    'for the code. After an edit, say in a sentence or two what you changed '
+    'and why.';
+
 const _spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 sealed class Entry {
@@ -49,7 +62,7 @@ class HarnessApp extends StatefulComponent {
 }
 
 class _HarnessAppState extends State<HarnessApp> {
-  late var _agent = Agent(component.provider, fileTools);
+  late var _agent = _newAgent();
   final _entries = <Entry>[];
   final _input = TextEditingController();
   final _scroll = AutoScrollController();
@@ -58,6 +71,9 @@ class _HarnessAppState extends State<HarnessApp> {
   var _frame = 0;
 
   bool get _busy => _ticker != null;
+
+  Agent _newAgent() =>
+      Agent(component.provider, fileTools, system: systemPrompt);
 
   @override
   void dispose() {
@@ -77,7 +93,7 @@ class _HarnessAppState extends State<HarnessApp> {
         return;
       case '/clear':
         setState(() {
-          _agent = Agent(component.provider, fileTools);
+          _agent = _newAgent();
           _entries.clear();
         });
         return;
