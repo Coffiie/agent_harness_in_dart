@@ -13,5 +13,15 @@ Future<void> main() async {
   }
 
   final gemini = GeminiProvider(apiKey);
-  await runApp(HarnessApp(provider: gemini, model: gemini.model));
+  final home =
+      Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
+  await runApp(
+    HarnessApp(
+      provider: gemini,
+      model: gemini.model,
+      settingsFile: home == null
+          ? null
+          : File('$home/.config/coding_agent_in_dart/settings.json'),
+    ),
+  );
 }

@@ -1,7 +1,9 @@
 import 'dart:io';
 
+import 'package:coding_agent_in_dart/src/design_system/colors.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
+import 'package:coding_agent_in_dart/src/settings.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:coding_agent_in_dart/src/tui.dart';
 import 'package:nocterm/nocterm.dart';
@@ -134,5 +136,114 @@ void main() {
 
     expect(provider.systems, [systemPrompt]);
     expect(systemPrompt, contains('Never write a diff'));
+  });
+
+  group('settings', () {
+    late File file;
+
+    setUp(() {
+      final dir = Directory.systemTemp.createTempSync();
+      addTearDown(() => dir.deleteSync(recursive: true));
+      file = File('${dir.path}/settings.json');
+    });
+
+    test('switches the theme from /settings and saves it', () async {
+      await testNocterm('switch theme', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        await tester.enterText('/settings');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(tester.terminalState, containsText('Graphite dark (current)'));
+
+        await tester.sendArrowDown();
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(tester.terminalState, isNot(containsText('Settings')));
+        expect(Settings.load(file).theme, AppThemeMode.graphiteLight);
+        expect(
+          tester.terminalState.getCellAt(0, 0)!.style.backgroundColor,
+          AppColorsTheme.graphiteLight().primaryContainer,
+        );
+      });
+    });
+
+    test('esc closes /settings without changing the theme', () async {
+      await testNocterm('esc', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        await tester.enterText('/settings');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.sendArrowDown();
+        await tester.sendEscape();
+        await tester.pump();
+
+        expect(tester.terminalState, isNot(containsText('Settings')));
+        expect(file.existsSync(), isFalse);
+      });
+    });
+
+    test('starts with the saved theme', () async {
+      const Settings(theme: AppThemeMode.normal).save(file);
+
+      await testNocterm('saved theme', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        final title = tester.terminalState.findText('coding_agent_in_dart');
+        expect(
+          tester.terminalState
+              .getCellAt(title.first.x, title.first.y)!
+              .style
+              .color,
+          AppColorsTheme.normal().accent,
+        );
+      });
+    });
+
+    test('gives unstyled reply text the light theme text color', () async {
+      // nocterm's markdown leaves list items without a color, so without
+      // the theme's foreground they would be the terminal's white on white.
+      const Settings(theme: AppThemeMode.graphiteLight).save(file);
+
+      await testNocterm('light list', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([say('- item one')]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        await tester.enterText('list');
+        await tester.sendEnter();
+        await tester.pump();
+
+        final item = tester.terminalState.findText('item one').first;
+        expect(
+          tester.terminalState.getCellAt(item.x, item.y)!.style.color,
+          AppColorsTheme.graphiteLight().primary,
+        );
+      });
+    });
   });
 }
