@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:coding_agent_in_dart/src/diff.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
@@ -34,6 +35,31 @@ void main() {
       'status': 'success',
     });
     expect(File(path).readAsStringSync(), 'new');
+  });
+
+  test('updateFile diffs the file on disk against the new contents', () {
+    final path = p.join(dir.path, 'a.txt');
+    File(path).writeAsStringSync('a\nb\n');
+
+    final diff = tool('updateFile').diff!({'path': path, 'content': 'a\nc\n'});
+
+    expect([for (final l in diff) '$l'], ['1   a', '2 - b', '2 + c']);
+    expect(File(path).readAsStringSync(), 'a\nb\n');
+  });
+
+  test('a new file diffs as all added, a bad path as nothing', () {
+    final diff = tool('updateFile').diff!;
+
+    expect(diff({'path': p.join(dir.path, 'new.txt'), 'content': 'x'}), [
+      isA<DiffLine>().having((l) => l.change, 'change', Change.added),
+    ]);
+    expect(diff({'path': dir.path, 'content': 'x'}), isEmpty);
+    expect(diff({'content': 'x'}), isEmpty);
+  });
+
+  test('only updateFile has a diff', () {
+    expect(tool('readFile').diff, isNull);
+    expect(tool('listFiles').diff, isNull);
   });
 
   test('failures come back as results', () async {

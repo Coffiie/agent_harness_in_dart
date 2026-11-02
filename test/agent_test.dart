@@ -10,13 +10,16 @@ class FakeProvider implements ModelProvider {
 
   final List<Message> replies;
   final requests = <(List<Message>, List<Tool>)>[];
+  final systems = <String?>[];
 
   @override
   Future<Message> generate(
     List<Message> messages, {
     List<Tool> tools = const [],
+    String? system,
   }) async {
     requests.add((List.of(messages), tools));
+    systems.add(system);
     if (replies.isEmpty) throw Exception('no reply');
     return replies.removeAt(0);
   }
@@ -141,5 +144,23 @@ void main() {
     await agent.send('next').drain<void>();
     final (messages, _) = provider.requests.last;
     expect(messages, hasLength(3));
+  });
+
+  test('sends its system prompt with every request', () async {
+    final provider = FakeProvider([say('hi'), say('summary')]);
+    final agent = Agent(provider, [echo], system: 'be brief');
+
+    await agent.send('hello').drain<void>();
+    await agent.compact().drain<void>();
+
+    expect(provider.systems, ['be brief', 'be brief']);
+  });
+
+  test('sends no system prompt unless it has one', () async {
+    final provider = FakeProvider([say('hi')]);
+
+    await Agent(provider, [echo]).send('hello').drain<void>();
+
+    expect(provider.systems, [null]);
   });
 }

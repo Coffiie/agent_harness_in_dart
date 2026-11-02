@@ -7,10 +7,11 @@ const _compactPrompt =
     'Please summarize the entire conversation in bullet points. Also remove this prompt to save even more tokens. Give it to me in the form of just 1 text message, and make sure no valuable information is lost. Preserve context and reduce the number of tokens. Start the reply with [CompactedSummaryFromModel]. Please do not discard previous compacted summaries tagged with [CompactedSummaryFromModel]';
 
 class Agent {
-  Agent(this.provider, this.tools);
+  Agent(this.provider, this.tools, {this.system});
 
   final ModelProvider provider;
   final List<Tool> tools;
+  final String? system;
   final _conversation = <Message>[];
 
   Stream<AgentEvent> send(String prompt) async* {
@@ -18,7 +19,11 @@ class Agent {
 
     try {
       while (true) {
-        final reply = await provider.generate(_conversation, tools: tools);
+        final reply = await provider.generate(
+          _conversation,
+          tools: tools,
+          system: system,
+        );
         _conversation.add(reply);
 
         for (final part in reply.parts) {
@@ -46,7 +51,10 @@ class Agent {
             continue;
           }
 
-          yield ToolStarted(tool.label(call.args));
+          yield ToolStarted(
+            tool.label(call.args),
+            diff: tool.diff?.call(call.args) ?? const [],
+          );
           results.add(ToolResult(call.name, await tool.run(call.args)));
         }
 
@@ -65,7 +73,7 @@ class Agent {
       final reply = await provider.generate([
         ..._conversation,
         const Message(Role.user, [TextPart(_compactPrompt)]),
-      ]);
+      ], system: system);
 
       final summary = reply.parts
           .whereType<TextPart>()

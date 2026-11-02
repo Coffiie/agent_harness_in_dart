@@ -10,6 +10,7 @@ environment:
 dependencies:
   path: ^1.9.0
   http: ^1.2.2
+  nocterm: ^0.9.0
 
 dev_dependencies:
   lints: ^6.0.0
