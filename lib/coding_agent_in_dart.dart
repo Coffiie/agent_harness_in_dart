@@ -61,6 +61,9 @@ void main(List<String> arguments) async {
         case UsageReported():
           // the TUI's header shows these; the CLI doesn't
           break;
+        case Asked(:final question):
+          // the CLI has no askUser tool, so this never comes
+          question.reply('');
       }
     }
   }

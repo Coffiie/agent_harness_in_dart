@@ -5,6 +5,7 @@ import 'package:coding_agent_in_dart/src/design_system/colors.dart';
 import 'package:coding_agent_in_dart/src/history.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
+import 'package:coding_agent_in_dart/src/question.dart';
 import 'package:coding_agent_in_dart/src/settings.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:coding_agent_in_dart/src/tui.dart';
@@ -241,6 +242,152 @@ void main() {
         await tester.sendEnter();
         await tester.pump();
         expect(tester.terminalState, containsText('▙ >_ ▟'));
+      });
+    });
+  });
+
+  group('askUser', () {
+    Message ask(String question, List<String> options) =>
+        Message(Role.assistant, [
+          ToolCall('askUser', {'question': question, 'options': options}),
+        ]);
+
+    Object? answerSent(FakeProvider provider) =>
+        (provider.requests.last.last.parts.single as ToolResult)
+            .output['answer'];
+
+    Future<void> askAndWait(NoctermTester tester) async {
+      await tester.enterText('add tests');
+      await tester.sendEnter();
+      await tester.pump();
+    }
+
+    test('shows the choices, the recommended one first and selected', () async {
+      final provider = FakeProvider([
+        ask('Also test 0 and 1 disks?', ['Yes, add the edge cases', 'No']),
+        say('ok'),
+      ]);
+
+      await testNocterm('ask shows', (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await askAndWait(tester);
+
+        expect(tester.terminalState, containsText('┃ AskUser'));
+        expect(
+          tester.terminalState,
+          containsText('? Also test 0 and 1 disks?'),
+        );
+        expect(
+          tester.terminalState,
+          containsText('❯ 1. Yes, add the edge cases (recommended)'),
+        );
+        expect(tester.terminalState, containsText('2. No'));
+        expect(tester.terminalState, containsText('3. Something else…'));
+        expect(tester.terminalState, containsText('▙ ?? ▟'));
+        expect(tester.terminalState, isNot(containsText('Thinking…')));
+        expect(provider.requests, hasLength(1));
+      });
+    });
+
+    test('Enter takes the recommended answer and the turn goes on', () async {
+      final provider = FakeProvider([
+        ask('Edge cases?', ['Yes', 'No']),
+        say('Added them.'),
+      ]);
+
+      await testNocterm('ask enter', (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await askAndWait(tester);
+
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+
+        expect(answerSent(provider), 'Yes');
+        expect(tester.terminalState, containsText('✓ Yes'));
+        expect(tester.terminalState, containsText('Added them.'));
+        expect(tester.terminalState, containsText('▙ ^^ ▟'));
+      });
+    });
+
+    test('the arrow keys or a number pick another', () async {
+      final arrows = FakeProvider([
+        ask('Q?', ['a', 'b', 'c']),
+        say('ok'),
+      ]);
+      final number = FakeProvider([
+        ask('Q?', ['a', 'b', 'c']),
+        say('ok'),
+      ]);
+
+      await testNocterm('ask arrows', (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: arrows, model: 'f'));
+        await askAndWait(tester);
+        await tester.sendArrowDown();
+        await tester.sendArrowDown();
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+      });
+      await testNocterm('ask number', (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: number, model: 'f'));
+        await askAndWait(tester);
+        await tester.enterText('2');
+        await tester.pump();
+        await tester.pump();
+      });
+
+      expect(answerSent(arrows), 'c');
+      expect(answerSent(number), 'b');
+    });
+
+    test('"Something else" takes a typed answer', () async {
+      final provider = FakeProvider([
+        ask('Q?', ['a', 'b']),
+        say('ok'),
+      ]);
+
+      await testNocterm('ask typed', (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await askAndWait(tester);
+        await tester.enterText('3');
+        await tester.pump();
+        expect(tester.terminalState, containsText('Type your answer'));
+
+        await tester.enterText('only the 3 disk case');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+
+        expect(answerSent(provider), 'only the 3 disk case');
+        expect(tester.terminalState, containsText('✓ only the 3 disk case'));
+      });
+    });
+
+    test('an answer from elsewhere closes the picker', () async {
+      final provider = FakeProvider([
+        ask('Q?', ['a', 'b']),
+        say('ok'),
+      ]);
+      Question? asked;
+
+      await testNocterm('ask elsewhere', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: provider,
+            model: 'f',
+            onQuestion: (question) => asked = question,
+          ),
+        );
+        await askAndWait(tester);
+
+        asked!.reply('b');
+        await tester.pump();
+        await tester.pump();
+
+        expect(answerSent(provider), 'b');
+        expect(tester.terminalState, containsText('✓ b'));
+        expect(tester.terminalState, containsText('Ask anything'));
       });
     });
   });

@@ -2,6 +2,7 @@ import 'package:coding_agent_in_dart/src/agent.dart';
 import 'package:coding_agent_in_dart/src/events.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
+import 'package:coding_agent_in_dart/src/question.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:coding_agent_in_dart/src/usage.dart';
 import 'package:test/test.dart';
@@ -168,6 +169,45 @@ void main() {
       second,
     ]);
     expect(compacted.whereType<UsageReported>().map((e) => e.usage), [summary]);
+  });
+
+  test('waits for the answer to askUser and sends it back', () async {
+    final provider = FakeProvider([
+      call('askUser', {
+        'question': 'Which?',
+        'options': ['a', 'b'],
+      }),
+      say('ok'),
+    ]);
+    final events = <AgentEvent>[];
+
+    final done = Agent(provider, [askUserTool]).send('go').forEach((event) {
+      events.add(event);
+      if (event is Asked) {
+        expect(event.question.options, ['a', 'b']);
+        // the model must not hear back until someone answers
+        expect(provider.requests, hasLength(1));
+        event.question.reply('b');
+      }
+    });
+    await done;
+
+    expect(events.whereType<Asked>(), hasLength(1));
+    final result = provider.requests.last.$1.last.parts.single as ToolResult;
+    expect(result.output, {'answer': 'b'});
+  });
+
+  test('askUser with no options is an error, not a question', () async {
+    final provider = FakeProvider([
+      call('askUser', {'question': 'Which?'}),
+      say('ok'),
+    ]);
+
+    final events = await Agent(provider, [askUserTool]).send('go').toList();
+
+    expect(events.whereType<Asked>(), isEmpty);
+    final result = provider.requests.last.$1.last.parts.single as ToolResult;
+    expect(result.output, contains('error'));
   });
 
   test('puts notes in front of the next prompt, once', () async {
