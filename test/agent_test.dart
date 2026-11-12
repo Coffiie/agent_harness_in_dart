@@ -170,6 +170,33 @@ void main() {
     expect(compacted.whereType<UsageReported>().map((e) => e.usage), [summary]);
   });
 
+  test('puts notes in front of the next prompt, once', () async {
+    final provider = FakeProvider([say('ok'), say('ok')]);
+    final agent = Agent(provider, [echo])..note('[undone]');
+
+    await agent.send('next').toList();
+    await agent.send('again').toList();
+
+    List<String> texts(Message m) => [
+      for (final p in m.parts) (p as TextPart).text,
+    ];
+    expect(texts(provider.requests[0].$1.last), ['[undone]', 'next']);
+    expect(texts(provider.requests[1].$1.last), ['again']);
+  });
+
+  test('a note waiting at /compact goes into the summary request', () async {
+    final provider = FakeProvider([say('hi'), say('summary')]);
+    final agent = Agent(provider, [echo]);
+
+    await agent.send('hello').toList();
+    agent.note('[undone]');
+    await agent.compact().toList();
+
+    final last = provider.requests[1].$1.last;
+    expect((last.parts.first as TextPart).text, '[undone]');
+    expect(last.parts, hasLength(2));
+  });
+
   test('sends its system prompt with every request', () async {
     final provider = FakeProvider([say('hi'), say('summary')]);
     final agent = Agent(provider, [echo], system: 'be brief');

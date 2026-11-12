@@ -1,11 +1,12 @@
 import 'dart:io';
 
 import 'package:coding_agent_in_dart/src/diff.dart';
+import 'package:coding_agent_in_dart/src/history.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
-Tool tool(String name) => fileTools.singleWhere((t) => t.name == name);
+Tool tool(String name) => fileTools().singleWhere((t) => t.name == name);
 
 void main() {
   late Directory dir;
@@ -35,6 +36,35 @@ void main() {
       'status': 'success',
     });
     expect(File(path).readAsStringSync(), 'new');
+  });
+
+  test('updateFile records each edit so it can be undone', () async {
+    final history = FileHistory();
+    final update = fileTools(
+      history: history,
+    ).singleWhere((t) => t.name == 'updateFile');
+    final old = p.join(dir.path, 'old.txt');
+    final made = p.join(dir.path, 'made.txt');
+    File(old).writeAsStringSync('before');
+
+    await update.run({'path': old, 'content': 'after'});
+    await update.run({'path': made, 'content': 'new file'});
+
+    expect(history.undo()!.deleted, isTrue);
+    expect(File(made).existsSync(), isFalse);
+    expect(history.undo()!.undone, isTrue);
+    expect(File(old).readAsStringSync(), 'before');
+  });
+
+  test('a write that fails records nothing', () async {
+    final history = FileHistory();
+    final update = fileTools(
+      history: history,
+    ).singleWhere((t) => t.name == 'updateFile');
+
+    await update.run({'path': dir.path, 'content': 'x'});
+
+    expect(history.isEmpty, isTrue);
   });
 
   test('updateFile diffs the file on disk against the new contents', () {

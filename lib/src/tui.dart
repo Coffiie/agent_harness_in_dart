@@ -10,6 +10,7 @@ import 'design_system/extensions.dart';
 import 'design_system/theme.dart';
 import 'diff.dart';
 import 'events.dart';
+import 'history.dart';
 import 'model_provider.dart';
 import 'settings.dart';
 import 'term.dart';
@@ -54,6 +55,22 @@ class EventEntry extends Entry {
   final AgentEvent event;
 }
 
+/// What /undo did, or null when there was nothing to undo.
+class UndoEntry extends Entry {
+  const UndoEntry(this.undo);
+
+  final Undo? undo;
+}
+
+/// What the model is told after /undo, so it doesn't go on as if its edit
+/// were still there.
+String undoNote(Undo undo) => undo.deleted
+    ? '[The user ran /undo. Your edit created ${undo.path}, so that file '
+          'was deleted.]'
+    : '[The user ran /undo. Your last edit to ${undo.path} was undone, and '
+          'the file is back to what it was before that edit. Read it again '
+          'before you change it.]';
+
 class HarnessApp extends StatefulComponent {
   const HarnessApp({
     super.key,
@@ -74,6 +91,8 @@ class HarnessApp extends StatefulComponent {
 }
 
 class _HarnessAppState extends State<HarnessApp> {
+  // every edit the agent makes, so /undo can take it back
+  final _history = FileHistory();
   late var _agent = _newAgent();
   final _entries = <Entry>[];
   final _input = TextEditingController();
@@ -98,8 +117,11 @@ class _HarnessAppState extends State<HarnessApp> {
   var _settingsOpen = false;
   var _choice = 0;
 
-  Agent _newAgent() =>
-      Agent(component.provider, fileTools, system: systemPrompt);
+  Agent _newAgent() => Agent(
+    component.provider,
+    fileTools(history: _history),
+    system: systemPrompt,
+  );
 
   @override
   void initState() {
@@ -118,7 +140,7 @@ class _HarnessAppState extends State<HarnessApp> {
     final every = switch (_mood) {
       Mood.waiting => const Duration(milliseconds: 600),
       Mood.working => const Duration(milliseconds: 250),
-      Mood.done || Mood.error => null,
+      Mood.done || Mood.error || Mood.undo => null,
     };
     _ticker = every == null
         ? null
@@ -143,11 +165,15 @@ class _HarnessAppState extends State<HarnessApp> {
         return;
       case '/clear':
         setState(() {
+          _history.clear();
           _agent = _newAgent();
           _entries.clear();
           _context = 0;
           _setMood(Mood.waiting);
         });
+        return;
+      case '/undo':
+        _undo();
         return;
       case '/settings':
         setState(() {
@@ -191,6 +217,20 @@ class _HarnessAppState extends State<HarnessApp> {
     setState(() {
       _busy = false;
       _setMood(failed ? Mood.error : Mood.done);
+    });
+  }
+
+  // Puts back the file the agent's last edit changed, and tells the model.
+  void _undo() {
+    final undo = _history.undo();
+    setState(() {
+      _entries
+        ..add(const PromptEntry('/undo'))
+        ..add(UndoEntry(undo));
+      if (undo != null && undo.undone) {
+        _agent.note(undoNote(undo));
+        _setMood(Mood.undo);
+      }
     });
   }
 
@@ -264,7 +304,7 @@ class _HarnessAppState extends State<HarnessApp> {
       controller: _input,
       focused: true,
       onSubmitted: _submit,
-      placeholder: 'Ask anything, or /compact, /clear, /settings, /exit',
+      placeholder: 'Ask anything, or /undo, /compact, /clear, /settings, /exit',
       placeholderStyle: TextStyle(color: colors.secondary),
       style: TextStyle(color: colors.primary),
       cursorColor: colors.focus,
@@ -412,6 +452,7 @@ class _HarnessAppState extends State<HarnessApp> {
           style: TextStyle(color: colors.secondary),
         ),
         EventEntry(:final event) => _event(event, colors),
+        UndoEntry(:final undo) => _undone(undo, colors),
       },
     );
   }
@@ -448,6 +489,43 @@ class _HarnessAppState extends State<HarnessApp> {
         style: TextStyle(color: colors.error),
       ),
     };
+  }
+
+  Component _undone(Undo? undo, AppColorsTheme colors) {
+    final note = TextStyle(color: colors.secondary);
+    if (undo == null) return Text('┃ Nothing to undo.', style: note);
+    if (undo.error case final error?) {
+      return Text(
+        'Error: could not undo ${undo.path}: $error',
+        style: TextStyle(color: colors.error),
+      );
+    }
+    if (undo.changedSince) {
+      return Text(
+        '┃ ${undo.path} changed after that edit, so /undo left it as it is.',
+        style: note,
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          '↺ Undid UpdateFile(path: ${undo.path})',
+          style: TextStyle(color: colors.tool),
+        ),
+        ..._diff(undo.diff, colors),
+        Padding(
+          padding: const EdgeInsets.only(left: 2),
+          child: Text(
+            undo.deleted
+                ? 'That edit created the file, so it is deleted. The model '
+                      'was told.'
+                : 'The model was told this edit was undone.',
+            style: note,
+          ),
+        ),
+      ],
+    );
   }
 
   List<Component> _diff(List<DiffLine> diff, AppColorsTheme colors) {

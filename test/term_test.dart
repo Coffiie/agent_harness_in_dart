@@ -15,9 +15,10 @@ void main() {
     );
   });
 
-  test('holds still when done or failed', () {
+  test('holds still when done, failed or undone', () {
     expect({face(Mood.done, 0), face(Mood.done, 3)}, {'^^'});
     expect({face(Mood.error, 0), face(Mood.error, 3)}, {'××'});
+    expect({face(Mood.undo, 0), face(Mood.undo, 3)}, {'<<'});
   });
 
   test('draws the face on a two-row terminal', () {

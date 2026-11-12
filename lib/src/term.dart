@@ -15,6 +15,9 @@ enum Mood {
 
   /// The last turn ended with an error.
   error,
+
+  /// The user ran /undo.
+  undo,
 }
 
 /// One eye going round a square, clockwise: top left, top right, bottom
@@ -28,6 +31,7 @@ String face(Mood mood, int frame) => switch (mood) {
   Mood.working => _eyes[frame % _eyes.length] * 2,
   Mood.done => '^^',
   Mood.error => '××',
+  Mood.undo => '<<',
 };
 
 /// Term's two rows: a little terminal with [face] on its screen.
@@ -37,7 +41,8 @@ List<String> termRows(Mood mood, int frame) => [
 ];
 
 /// Term, the harness's mascot. It sits in the header in the theme's accent
-/// color, or its error color after a failed turn.
+/// color, its error color after a failed turn, and its tool color after
+/// /undo.
 class Term extends StatelessComponent {
   const Term({super.key, required this.mood, this.frame = 0});
 
@@ -48,7 +53,11 @@ class Term extends StatelessComponent {
   Component build(BuildContext context) {
     final colors = context.theme.colors;
     final style = TextStyle(
-      color: mood == Mood.error ? colors.error : colors.accent,
+      color: switch (mood) {
+        Mood.error => colors.error,
+        Mood.undo => colors.tool,
+        _ => colors.accent,
+      },
     );
 
     return Column(

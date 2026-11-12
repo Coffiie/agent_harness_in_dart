@@ -14,8 +14,21 @@ class Agent {
   final String? system;
   final _conversation = <Message>[];
 
+  // Things the model should know that happened outside the chat, like
+  // /undo. They go in front of the next prompt, or into /compact's request.
+  final _notes = <String>[];
+
+  /// Tells the model [text] with the next request.
+  void note(String text) => _notes.add(text);
+
+  List<Part> _withNotes(String text) {
+    final parts = [for (final note in _notes) TextPart(note), TextPart(text)];
+    _notes.clear();
+    return parts;
+  }
+
   Stream<AgentEvent> send(String prompt) async* {
-    _conversation.add(Message(Role.user, [TextPart(prompt)]));
+    _conversation.add(Message(Role.user, _withNotes(prompt)));
 
     try {
       while (true) {
@@ -73,7 +86,7 @@ class Agent {
       yield const CompactionStarted();
       final reply = await provider.generate([
         ..._conversation,
-        const Message(Role.user, [TextPart(_compactPrompt)]),
+        Message(Role.user, _withNotes(_compactPrompt)),
       ], system: system);
       if (reply.usage case final usage?) yield UsageReported(usage);
 
