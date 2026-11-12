@@ -12,6 +12,7 @@ import 'diff.dart';
 import 'events.dart';
 import 'model_provider.dart';
 import 'settings.dart';
+import 'term.dart';
 import 'tools.dart';
 
 const _maxDiffLines = 14;
@@ -28,8 +29,6 @@ const systemPrompt =
     'them to it. Do not paste the code you just wrote unless the user asks '
     'for the code. After an edit, say in a sentence or two what you changed '
     'and why.';
-
-const _spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 sealed class Entry {
   const Entry();
@@ -72,17 +71,43 @@ class _HarnessAppState extends State<HarnessApp> {
   final _input = TextEditingController();
   final _scroll = AutoScrollController();
 
+  // Term's animation: [_frame] counts ticks of [_ticker], which runs while
+  // Term blinks or works and stops for the done and error faces.
   Timer? _ticker;
   var _frame = 0;
+  var _mood = Mood.waiting;
+  var _busy = false;
 
   late var _settings = Settings.load(component.settingsFile);
   var _settingsOpen = false;
   var _choice = 0;
 
-  bool get _busy => _ticker != null;
-
   Agent _newAgent() =>
       Agent(component.provider, fileTools, system: systemPrompt);
+
+  @override
+  void initState() {
+    super.initState();
+    _animate();
+  }
+
+  void _setMood(Mood mood) {
+    _mood = mood;
+    _frame = 0;
+    _animate();
+  }
+
+  void _animate() {
+    _ticker?.cancel();
+    final every = switch (_mood) {
+      Mood.waiting => const Duration(milliseconds: 600),
+      Mood.working => const Duration(milliseconds: 250),
+      Mood.done || Mood.error => null,
+    };
+    _ticker = every == null
+        ? null
+        : Timer.periodic(every, (_) => setState(() => _frame++));
+  }
 
   @override
   void dispose() {
@@ -104,6 +129,7 @@ class _HarnessAppState extends State<HarnessApp> {
         setState(() {
           _agent = _newAgent();
           _entries.clear();
+          _setMood(Mood.waiting);
         });
         return;
       case '/settings':
@@ -116,24 +142,25 @@ class _HarnessAppState extends State<HarnessApp> {
 
     setState(() {
       _entries.add(PromptEntry(prompt));
-      _ticker = Timer.periodic(const Duration(milliseconds: 80), (_) {
-        setState(() => _frame++);
-      });
+      _busy = true;
+      _setMood(Mood.working);
     });
 
     final events = prompt.trim() == '/compact'
         ? _agent.compact()
         : _agent.send(prompt);
 
+    var failed = false;
     await for (final event in events) {
       if (!mounted) return;
+      if (event is AgentError) failed = true;
       setState(() => _entries.add(EventEntry(event)));
     }
 
     if (!mounted) return;
     setState(() {
-      _ticker?.cancel();
-      _ticker = null;
+      _busy = false;
+      _setMood(failed ? Mood.error : Mood.done);
     });
   }
 
@@ -278,16 +305,28 @@ class _HarnessAppState extends State<HarnessApp> {
           style: BoxBorderStyle.rounded,
         ),
       ),
-      child: Column(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'coding_agent_in_dart',
-            style: TextStyle(color: colors.accent, fontWeight: FontWeight.bold),
-          ),
-          Text(
-            '${component.model} · ${_cwd()}',
-            style: TextStyle(color: colors.secondary),
+          Term(mood: _mood, frame: _frame),
+          const SizedBox(width: 2),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'coding_agent_in_dart',
+                  style: TextStyle(
+                    color: colors.accent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                Text(
+                  '${component.model} · ${_cwd()}',
+                  style: TextStyle(color: colors.secondary),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -307,7 +346,7 @@ class _HarnessAppState extends State<HarnessApp> {
       height: 1,
       child: _busy
           ? Text(
-              '${_spinner[_frame % _spinner.length]} Thinking…',
+              '${face(Mood.working, _frame)} Thinking…',
               style: TextStyle(color: colors.accent),
             )
           : const Text(''),

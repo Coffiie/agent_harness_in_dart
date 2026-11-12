@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:coding_agent_in_dart/src/design_system/colors.dart';
@@ -30,6 +31,34 @@ class FakeProvider implements ModelProvider {
 }
 
 Message say(String text) => Message(Role.assistant, [TextPart(text)]);
+
+/// Holds every reply until the test completes [reply], so the test can look
+/// at the screen while the agent works.
+class HeldProvider implements ModelProvider {
+  final reply = Completer<Message>();
+
+  @override
+  Future<Message> generate(
+    List<Message> messages, {
+    List<Tool> tools = const [],
+    String? system,
+  }) => reply.future;
+
+  @override
+  Future<int> countTokens(List<Message> messages) async => messages.length;
+}
+
+class FailingProvider implements ModelProvider {
+  @override
+  Future<Message> generate(
+    List<Message> messages, {
+    List<Tool> tools = const [],
+    String? system,
+  }) async => throw Exception('503 high demand');
+
+  @override
+  Future<int> countTokens(List<Message> messages) async => messages.length;
+}
 
 void main() {
   test('shows the prompt and the reply', () async {
@@ -136,6 +165,80 @@ void main() {
 
     expect(provider.systems, [systemPrompt]);
     expect(systemPrompt, contains('Never write a diff'));
+  });
+
+  group('Term', () {
+    test('waits in the header before the first prompt', () async {
+      await testNocterm('term waiting', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake'),
+        );
+
+        expect(tester.terminalState, containsText('▛▀▀▀▀▜'));
+        expect(tester.terminalState, containsText('▙ >_ ▟'));
+      });
+    });
+
+    test('works while the agent runs, then shows it is done', () async {
+      final provider = HeldProvider();
+
+      await testNocterm('term working', (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('▙ ▘▘ ▟'));
+        expect(tester.terminalState, containsText('▘▘ Thinking…'));
+
+        provider.reply.complete(say('hi'));
+        await Future<void>.delayed(Duration.zero);
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('▙ ^^ ▟'));
+        expect(tester.terminalState, isNot(containsText('Thinking…')));
+      });
+    });
+
+    test(
+      'shows the error face in the error color after a failed turn',
+      () async {
+        await testNocterm('term error', (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(provider: FailingProvider(), model: 'fake'),
+          );
+
+          await tester.enterText('hello');
+          await tester.sendEnter();
+          await tester.pump();
+
+          final eyes = tester.terminalState.findText('××').first;
+          expect(
+            tester.terminalState.getCellAt(eyes.x, eyes.y)!.style.color,
+            AppColorsTheme.graphiteDark().error,
+          );
+        });
+      },
+    );
+
+    test('/clear sends it back to waiting', () async {
+      await testNocterm('term clear', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([say('hi')]), model: 'fake'),
+        );
+
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(tester.terminalState, containsText('▙ ^^ ▟'));
+
+        await tester.enterText('/clear');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(tester.terminalState, containsText('▙ >_ ▟'));
+      });
+    });
   });
 
   group('settings', () {
