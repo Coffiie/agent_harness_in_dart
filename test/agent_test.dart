@@ -3,6 +3,7 @@ import 'package:coding_agent_in_dart/src/events.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
+import 'package:coding_agent_in_dart/src/usage.dart';
 import 'package:test/test.dart';
 
 class FakeProvider implements ModelProvider {
@@ -144,6 +145,29 @@ void main() {
     await agent.send('next').drain<void>();
     final (messages, _) = provider.requests.last;
     expect(messages, hasLength(3));
+  });
+
+  test('reports the usage of every call, compaction included', () async {
+    const first = Usage(input: 100, output: 10);
+    const second = Usage(input: 130, output: 20);
+    const summary = Usage(input: 160, output: 5);
+    final provider = FakeProvider([
+      Message(Role.assistant, [
+        const ToolCall('echo', {'text': 'ping'}),
+      ], usage: first),
+      Message(Role.assistant, [const TextPart('done')], usage: second),
+      Message(Role.assistant, [const TextPart('summary')], usage: summary),
+    ]);
+    final agent = Agent(provider, [echo]);
+
+    final sent = await agent.send('go').toList();
+    final compacted = await agent.compact().toList();
+
+    expect(sent.whereType<UsageReported>().map((e) => e.usage), [
+      first,
+      second,
+    ]);
+    expect(compacted.whereType<UsageReported>().map((e) => e.usage), [summary]);
   });
 
   test('sends its system prompt with every request', () async {

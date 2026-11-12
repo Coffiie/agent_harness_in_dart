@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'messages.dart';
 import 'model_provider.dart';
 import 'tools.dart';
+import 'usage.dart';
 
 const _baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -49,16 +50,33 @@ class GeminiProvider implements ModelProvider {
       throw Exception('model content is null');
     }
 
-    return Message(Role.assistant, [
-      for (final part in content['parts'] as List<dynamic>)
-        if (part['functionCall'] case final Map<String, dynamic> call)
-          ToolCall(
-            call['name'] as String,
-            call['args'] as Map<String, dynamic>? ?? {},
-          )
-        else if (part['text'] case final String text)
-          TextPart(text),
-    ], raw: content);
+    return Message(
+      Role.assistant,
+      [
+        for (final part in content['parts'] as List<dynamic>)
+          if (part['functionCall'] case final Map<String, dynamic> call)
+            ToolCall(
+              call['name'] as String,
+              call['args'] as Map<String, dynamic>? ?? {},
+            )
+          else if (part['text'] case final String text)
+            TextPart(text),
+      ],
+      raw: content,
+      usage: _usage(response['usageMetadata']),
+    );
+  }
+
+  // Gemini bills thinking tokens as output, and counts cached tokens inside
+  // promptTokenCount.
+  Usage? _usage(Object? meta) {
+    if (meta is! Map) return null;
+    int count(String key) => (meta[key] as num?)?.toInt() ?? 0;
+    return Usage(
+      input: count('promptTokenCount'),
+      cached: count('cachedContentTokenCount'),
+      output: count('candidatesTokenCount') + count('thoughtsTokenCount'),
+    );
   }
 
   @override
