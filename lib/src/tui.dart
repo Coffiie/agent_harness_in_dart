@@ -14,8 +14,16 @@ import 'model_provider.dart';
 import 'settings.dart';
 import 'term.dart';
 import 'tools.dart';
+import 'usage.dart';
 
 const _maxDiffLines = 14;
+
+/// 3318 -> "3,318".
+String grouped(int n) =>
+    n.toString().replaceAllMapped(RegExp(r'\B(?=(\d{3})+$)'), (_) => ',');
+
+/// Dollars to four places, so a fraction of a cent still shows: "$0.0006".
+String dollars(double amount) => '\$${amount.toStringAsFixed(4)}';
 
 // The TUI draws the harness's own diff under every file edit (see _diff), so
 // the model is told not to write one.
@@ -78,6 +86,14 @@ class _HarnessAppState extends State<HarnessApp> {
   var _mood = Mood.waiting;
   var _busy = false;
 
+  // The header's counters: the chat's size after the last call, and the
+  // dollars spent since the app started. /compact and /clear shrink the
+  // first; the second only goes up.
+  var _context = 0;
+  var _spent = 0.0;
+
+  Price? get _price => _settings.prices[component.model];
+
   late var _settings = Settings.load(component.settingsFile);
   var _settingsOpen = false;
   var _choice = 0;
@@ -129,6 +145,7 @@ class _HarnessAppState extends State<HarnessApp> {
         setState(() {
           _agent = _newAgent();
           _entries.clear();
+          _context = 0;
           _setMood(Mood.waiting);
         });
         return;
@@ -153,8 +170,21 @@ class _HarnessAppState extends State<HarnessApp> {
     var failed = false;
     await for (final event in events) {
       if (!mounted) return;
-      if (event is AgentError) failed = true;
-      setState(() => _entries.add(EventEntry(event)));
+      setState(() {
+        switch (event) {
+          case UsageReported(:final usage):
+            _context = usage.context;
+            _spent += _price?.cost(usage) ?? 0;
+          case Compacted(:final after):
+            _context = after;
+            _entries.add(EventEntry(event));
+          case AgentError():
+            failed = true;
+            _entries.add(EventEntry(event));
+          default:
+            _entries.add(EventEntry(event));
+        }
+      });
     }
 
     if (!mounted) return;
@@ -174,7 +204,7 @@ class _HarnessAppState extends State<HarnessApp> {
         setState(() => _choice = (_choice + 1) % modes.length);
       case LogicalKey.enter:
         setState(() {
-          _settings = Settings(theme: modes[_choice]);
+          _settings = _settings.copyWith(theme: modes[_choice]);
           _settingsOpen = false;
         });
         _settings.save(component.settingsFile);
@@ -314,12 +344,19 @@ class _HarnessAppState extends State<HarnessApp> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'coding_agent_in_dart',
-                  style: TextStyle(
-                    color: colors.accent,
-                    fontWeight: FontWeight.bold,
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'coding_agent_in_dart',
+                        style: TextStyle(
+                          color: colors.accent,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    ..._counters(colors),
+                  ],
                 ),
                 Text(
                   '${component.model} · ${_cwd()}',
@@ -331,6 +368,19 @@ class _HarnessAppState extends State<HarnessApp> {
         ],
       ),
     );
+  }
+
+  List<Component> _counters(AppColorsTheme colors) {
+    final label = TextStyle(color: colors.secondary);
+    return [
+      Text('context ', style: label),
+      Text('${grouped(_context)} tok', style: TextStyle(color: colors.primary)),
+      Text('  spent ', style: label),
+      Text(
+        _price == null ? 'no price for ${component.model}' : dollars(_spent),
+        style: TextStyle(color: colors.accent, fontWeight: FontWeight.bold),
+      ),
+    ];
   }
 
   String _cwd() {
@@ -392,6 +442,7 @@ class _HarnessAppState extends State<HarnessApp> {
         '┃ Compacted conversation from $before tokens to $after tokens',
         style: TextStyle(color: colors.tool),
       ),
+      UsageReported() => const SizedBox(),
       AgentError(:final message) => Text(
         'Error: $message',
         style: TextStyle(color: colors.error),

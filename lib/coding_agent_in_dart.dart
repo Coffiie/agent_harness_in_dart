@@ -58,6 +58,9 @@ void main(List<String> arguments) async {
           );
         case AgentError(:final message):
           print('Error generating content: $message');
+        case UsageReported():
+          // the TUI's header shows these; the CLI doesn't
+          break;
       }
     }
   }

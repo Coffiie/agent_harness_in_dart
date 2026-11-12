@@ -25,6 +25,7 @@ class Agent {
           system: system,
         );
         _conversation.add(reply);
+        if (reply.usage case final usage?) yield UsageReported(usage);
 
         for (final part in reply.parts) {
           if (part is TextPart && part.text.isNotEmpty) {
@@ -74,6 +75,7 @@ class Agent {
         ..._conversation,
         const Message(Role.user, [TextPart(_compactPrompt)]),
       ], system: system);
+      if (reply.usage case final usage?) yield UsageReported(usage);
 
       final summary = reply.parts
           .whereType<TextPart>()

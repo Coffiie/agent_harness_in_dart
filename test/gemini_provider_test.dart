@@ -176,6 +176,35 @@ void main() {
     expect(jsonDecode(requests.last.body)['contents'][1], content);
   });
 
+  test('reads the usage, counting thinking as output', () async {
+    respond({
+      ...reply([
+        {'text': 'hi'},
+      ]),
+      'usageMetadata': {
+        'promptTokenCount': 1200,
+        'cachedContentTokenCount': 1000,
+        'candidatesTokenCount': 30,
+        'thoughtsTokenCount': 70,
+        'totalTokenCount': 1300,
+      },
+    });
+
+    final usage = (await gemini.generate([hello])).usage!;
+
+    expect((usage.input, usage.cached, usage.output), (1200, 1000, 100));
+  });
+
+  test('has no usage when Gemini sends none', () async {
+    respond(
+      reply([
+        {'text': 'hi'},
+      ]),
+    );
+
+    expect((await gemini.generate([hello])).usage, isNull);
+  });
+
   test('counts tokens', () async {
     respond({'totalTokens': 42});
 

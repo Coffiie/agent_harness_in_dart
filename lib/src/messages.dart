@@ -1,3 +1,5 @@
+import 'usage.dart';
+
 enum Role { user, assistant }
 
 sealed class Part {
@@ -25,9 +27,12 @@ class ToolResult extends Part {
 }
 
 class Message {
-  const Message(this.role, this.parts, {this.raw});
+  const Message(this.role, this.parts, {this.raw, this.usage});
 
   final Role role;
   final List<Part> parts;
   final Object? raw;
+
+  /// The tokens the call that wrote this reply used, when the provider says.
+  final Usage? usage;
 }

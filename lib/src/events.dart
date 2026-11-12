@@ -1,4 +1,5 @@
 import 'diff.dart';
+import 'usage.dart';
 
 sealed class AgentEvent {
   const AgentEvent();
@@ -15,6 +16,14 @@ class ToolStarted extends AgentEvent {
 
   final String label;
   final List<DiffLine> diff;
+}
+
+/// The tokens one model call used. Comes after every call that reports
+/// them, compaction included.
+class UsageReported extends AgentEvent {
+  const UsageReported(this.usage);
+
+  final Usage usage;
 }
 
 class CompactionStarted extends AgentEvent {

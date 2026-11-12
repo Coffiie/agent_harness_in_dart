@@ -7,6 +7,7 @@ import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/settings.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:coding_agent_in_dart/src/tui.dart';
+import 'package:coding_agent_in_dart/src/usage.dart';
 import 'package:nocterm/nocterm.dart';
 import 'package:test/test.dart';
 
@@ -237,6 +238,148 @@ void main() {
         await tester.sendEnter();
         await tester.pump();
         expect(tester.terminalState, containsText('▙ >_ ▟'));
+      });
+    });
+  });
+
+  group('cost', () {
+    late File file;
+
+    setUp(() {
+      final dir = Directory.systemTemp.createTempSync();
+      addTearDown(() => dir.deleteSync(recursive: true));
+      file = File('${dir.path}/settings.json');
+      // $1 per million input tokens and $2 per million output, so the
+      // numbers are easy to check
+      const Settings(prices: {'fake': Price(input: 1, output: 2)}).save(file);
+    });
+
+    Message costing(String text, int input, int output) => Message(
+      Role.assistant,
+      [TextPart(text)],
+      usage: Usage(input: input, output: output),
+    );
+
+    test('starts at zero', () async {
+      await testNocterm('cost zero', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        expect(tester.terminalState, containsText('context 0 tok'));
+        expect(tester.terminalState, containsText(r'spent $0.0000'));
+      });
+    });
+
+    test('shows the chat size and adds up what each call cost', () async {
+      await testNocterm('cost adds up', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([
+              costing('one', 1000, 200),
+              costing('two', 3000, 318),
+            ]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        await tester.enterText('first');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(tester.terminalState, containsText('context 1,200 tok'));
+        expect(tester.terminalState, containsText(r'spent $0.0014'));
+
+        await tester.enterText('second');
+        await tester.sendEnter();
+        await tester.pump();
+        // 1000 + 3000 input at $1, 200 + 318 output at $2
+        expect(tester.terminalState, containsText('context 3,318 tok'));
+        expect(tester.terminalState, containsText(r'spent $0.0050'));
+      });
+    });
+
+    test('/compact shrinks the context but not what was spent', () async {
+      await testNocterm('cost compact', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([
+              costing('hi', 3000, 318),
+              costing('summary', 3318, 100),
+            ]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.enterText('/compact');
+        await tester.sendEnter();
+        await tester.pump();
+
+        // the fake counts one token per message, and the summary is one
+        expect(tester.terminalState, containsText('context 1 tok'));
+        expect(tester.terminalState, containsText(r'spent $0.0072'));
+      });
+    });
+
+    test('/clear empties the context and keeps what was spent', () async {
+      await testNocterm('cost clear', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([costing('hi', 3000, 318)]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.enterText('/clear');
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('context 0 tok'));
+        expect(tester.terminalState, containsText(r'spent $0.0036'));
+      });
+    });
+
+    test('says so when the model has no price', () async {
+      await testNocterm('cost no price', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'mystery'),
+        );
+
+        expect(tester.terminalState, containsText('no price for mystery'));
+      });
+    });
+
+    test('changing the theme keeps the prices', () async {
+      await testNocterm('cost theme', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([]),
+            model: 'fake',
+            settingsFile: file,
+          ),
+        );
+
+        await tester.enterText('/settings');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.sendArrowDown();
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(Settings.load(file).prices['fake']!.output, 2);
+        expect(tester.terminalState, containsText(r'spent $0.0000'));
       });
     });
   });
