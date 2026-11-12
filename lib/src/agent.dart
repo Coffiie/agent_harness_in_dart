@@ -2,17 +2,53 @@ import 'events.dart';
 import 'messages.dart';
 import 'model_provider.dart';
 import 'tools.dart';
+import 'usage.dart';
 
 const _compactPrompt =
     'Please summarize the entire conversation in bullet points. Also remove this prompt to save even more tokens. Give it to me in the form of just 1 text message, and make sure no valuable information is lost. Preserve context and reduce the number of tokens. Start the reply with [CompactedSummaryFromModel]. Please do not discard previous compacted summaries tagged with [CompactedSummaryFromModel]';
 
+const _handoffPrompt =
+    'The user is starting a new, separate chat with the prompt below. Does '
+    'that prompt depend on anything in this conversation, like files, code, '
+    'names or decisions from it? If it does not, reply with exactly NONE. If '
+    'it does, reply with a short summary in bullet points of only what the '
+    'new chat needs to know. Start that reply with '
+    '[CompactedSummaryFromModel].\n\nThe new prompt: ';
+
+/// What [Agent.handoff] decided: a summary for the new chat to start from,
+/// or null when the prompt needs nothing from this one.
+class Handoff {
+  const Handoff(this.summary, {this.usage});
+
+  final String? summary;
+
+  /// What the call cost, when there was one.
+  final Usage? usage;
+}
+
 class Agent {
-  Agent(this.provider, this.tools, {this.system});
+  /// Starts from [conversation] when given one, for /fork and /new.
+  Agent(
+    this.provider,
+    this.tools, {
+    this.system,
+    Iterable<Message> conversation = const [],
+  }) {
+    _conversation.addAll(conversation);
+  }
 
   final ModelProvider provider;
   final List<Tool> tools;
   final String? system;
   final _conversation = <Message>[];
+
+  /// The chat so far.
+  List<Message> get conversation => List.unmodifiable(_conversation);
+
+  /// Starts a chat from a summary, the way /compact leaves one.
+  static List<Message> summarized(String summary) => [
+    Message(Role.assistant, [TextPart(summary)]),
+  ];
 
   // Things the model should know that happened outside the chat, like
   // /undo. They go in front of the next prompt, or into /compact's request.
@@ -85,6 +121,25 @@ class Agent {
     }
   }
 
+  /// Asks the model, in one call that leaves this chat as it is, whether
+  /// [prompt] needs anything from this chat. With no chat yet there's
+  /// nothing to ask.
+  Future<Handoff> handoff(String prompt) async {
+    if (_conversation.isEmpty) return const Handoff(null);
+
+    final reply = await provider.generate([
+      ..._conversation,
+      Message(Role.user, [TextPart('$_handoffPrompt$prompt')]),
+    ], system: system);
+    final text = reply.parts
+        .whereType<TextPart>()
+        .map((p) => p.text)
+        .join()
+        .trim();
+    final none = text.isEmpty || text.startsWith('NONE');
+    return Handoff(none ? null : text, usage: reply.usage);
+  }
+
   Stream<AgentEvent> compact() async* {
     try {
       final before = await provider.countTokens(_conversation);
@@ -105,9 +160,7 @@ class Agent {
         return;
       }
 
-      final compacted = [
-        Message(Role.assistant, [TextPart(summary)]),
-      ];
+      final compacted = summarized(summary);
       final after = await provider.countTokens(compacted);
 
       _conversation

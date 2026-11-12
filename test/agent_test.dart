@@ -254,4 +254,73 @@ void main() {
 
     expect(provider.systems, [null]);
   });
+
+  test('starts from a conversation it is given', () async {
+    final provider = FakeProvider([say('Lyon')]);
+    final agent = Agent(
+      provider,
+      [],
+      conversation: [
+        Message(Role.user, [const TextPart('capital of France?')]),
+        say('Paris'),
+      ],
+    );
+
+    await agent.send('and the second city?').toList();
+
+    expect(provider.requests.single.$1, hasLength(3));
+    expect(agent.conversation, hasLength(4));
+  });
+
+  group('handoff', () {
+    Agent chatted(FakeProvider provider) => Agent(
+      provider,
+      [],
+      conversation: [
+        Message(Role.user, [const TextPart('capital of France?')]),
+        say('Paris'),
+      ],
+    );
+
+    test(
+      'returns no summary when the model says the prompt needs none',
+      () async {
+        final provider = FakeProvider([say('NONE')]);
+        final agent = chatted(provider);
+
+        final handoff = await agent.handoff('write a haiku');
+
+        expect(handoff.summary, isNull);
+        final asked = provider.requests.single.$1;
+        expect(asked, hasLength(3));
+        expect(
+          (asked.last.parts.single as TextPart).text,
+          endsWith('write a haiku'),
+        );
+        expect(agent.conversation, hasLength(2)); // left as it was
+      },
+    );
+
+    test('returns the summary and what the call cost', () async {
+      final provider = FakeProvider([
+        Message(Role.assistant, [
+          const TextPart('[CompactedSummaryFromModel] - Paris is the capital'),
+        ], usage: const Usage(input: 10, output: 5)),
+      ]);
+
+      final handoff = await chatted(provider).handoff('and the second city?');
+
+      expect(handoff.summary, contains('Paris is the capital'));
+      expect(handoff.usage?.output, 5);
+    });
+
+    test('makes no call when there is no chat yet', () async {
+      final provider = FakeProvider([]);
+
+      final handoff = await Agent(provider, []).handoff('hello');
+
+      expect(handoff.summary, isNull);
+      expect(provider.requests, isEmpty);
+    });
+  });
 }

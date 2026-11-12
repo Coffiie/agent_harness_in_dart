@@ -767,4 +767,380 @@ void main() {
       });
     });
   });
+
+  group('sessions', () {
+    const wide = Size(120, 30);
+
+    Future<void> type(NoctermTester tester, String text) async {
+      await tester.enterText(text);
+      await tester.sendEnter();
+      await tester.pump();
+    }
+
+    Future<void> ctrlTab(NoctermTester tester, {bool shift = false}) =>
+        tester.sendKeyEvent(
+          KeyboardEvent(
+            logicalKey: LogicalKey.tab,
+            modifiers: ModifierKeys(ctrl: true, shift: shift),
+          ),
+        );
+
+    Future<void> mouse(
+      NoctermTester tester,
+      int x,
+      int y, {
+      bool pressed = true,
+      bool moving = false,
+    }) => tester.sendMouseEvent(
+      MouseEvent(
+        button: MouseButton.left,
+        x: x,
+        y: y,
+        pressed: pressed,
+        isMotion: moving,
+      ),
+    );
+
+    Future<void> click(NoctermTester tester, int x, int y) async {
+      await mouse(tester, x, y);
+      await mouse(tester, x, y, pressed: false);
+    }
+
+    Future<void> drag(
+      NoctermTester tester,
+      TextMatch from,
+      int x,
+      int y,
+    ) async {
+      await mouse(tester, from.x, from.y);
+      await mouse(tester, x, y, moving: true);
+      await mouse(tester, x, y, pressed: false);
+    }
+
+    // the name on the sidebar row marked ▸
+    String active(NoctermTester tester) {
+      final mark = tester.terminalState.findText('▸ ').single;
+      return tester.terminalState
+          .getTextAt(mark.x + 5, mark.y, length: 20)!
+          .split(' · ')
+          .first;
+    }
+
+    test('shows no sidebar until there is a second session', () async {
+      await testNocterm('sidebar', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake'),
+        );
+        expect(tester.terminalState, isNot(containsText('Sessions')));
+
+        await type(tester, '/new');
+
+        expect(tester.terminalState, containsText('Sessions'));
+        expect(tester.terminalState, containsText('>_ session 1 · idle'));
+        expect(tester.terminalState, containsText('>_ session 2 · idle'));
+        expect(active(tester), 'session 2');
+      });
+    });
+
+    test('names a session after its first prompt', () async {
+      await testNocterm('name', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([say('ok')]), model: 'fake'),
+        );
+
+        await type(tester, 'write a tower of hanoi algorithm');
+        await type(tester, '/new');
+
+        expect(tester.terminalState, containsText('^^ tower hanoi · done'));
+      });
+    });
+
+    test('/fork copies the chat into a new session next to it', () async {
+      final provider = FakeProvider([say('Paris'), say('Lyon')]);
+
+      await testNocterm('fork', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: provider, model: 'fake'),
+        );
+
+        await type(tester, 'capital of France?');
+        await type(tester, '/fork');
+
+        expect(active(tester), 'capital France 2');
+        expect(tester.terminalState, containsText('> capital of France?'));
+        expect(tester.terminalState, containsText('Paris'));
+        expect(
+          tester.terminalState,
+          containsText('Forked from capital France'),
+        );
+
+        await type(tester, 'and the second city?');
+        expect(provider.requests.last, hasLength(3)); // the chat came along
+        expect(tester.terminalState, containsText('Lyon'));
+
+        await ctrlTab(tester, shift: true);
+        expect(active(tester), 'capital France');
+        expect(tester.terminalState, isNot(containsText('Lyon')));
+      });
+    });
+
+    test('Ctrl+Tab, Shift+Tab and Ctrl+Shift+Tab switch sessions', () async {
+      await testNocterm('switch', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake'),
+        );
+        await type(tester, '/new');
+        await type(tester, '/new');
+        expect(active(tester), 'session 3');
+
+        await ctrlTab(tester);
+        expect(active(tester), 'session 1');
+
+        await tester.sendKeyEvent(
+          KeyboardEvent(
+            logicalKey: LogicalKey.tab,
+            modifiers: const ModifierKeys(shift: true),
+          ),
+        );
+        expect(active(tester), 'session 2');
+
+        await ctrlTab(tester, shift: true);
+        expect(active(tester), 'session 1');
+      });
+    });
+
+    test('clicking a row switches to it', () async {
+      await testNocterm('click row', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake'),
+        );
+        await type(tester, '/new');
+
+        final row = tester.terminalState.findText('session 1').first;
+        await click(tester, row.x, row.y);
+
+        expect(active(tester), 'session 1');
+      });
+    });
+
+    test('a session keeps working while another has the screen', () async {
+      final provider = HeldProvider();
+
+      await testNocterm('background', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: provider, model: 'fake'),
+        );
+
+        await type(tester, 'hello');
+        await type(tester, '/new'); // works while hello is busy
+        expect(active(tester), 'session 2');
+        expect(tester.terminalState, containsText('hello · working'));
+
+        provider.reply.complete(say('Bonjour'));
+        await Future<void>.delayed(Duration.zero);
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('^^ hello · done'));
+        expect(tester.terminalState, isNot(containsText('Bonjour')));
+      });
+    });
+
+    test(
+      '/new with a prompt starts fresh when Gemini says it needs nothing',
+      () async {
+        final provider = FakeProvider([say('Paris'), say('NONE'), say('Done')]);
+
+        await testNocterm('new fresh', size: wide, (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(provider: provider, model: 'fake'),
+          );
+
+          await type(tester, 'capital of France?');
+          await type(tester, '/new write a haiku');
+          await tester.pump();
+
+          expect(active(tester), 'haiku');
+          expect(
+            tester.terminalState,
+            containsText("Gemini says this doesn't need capital France"),
+          );
+          expect(tester.terminalState, containsText('Done'));
+          expect(provider.requests[1], hasLength(3)); // the question
+          expect(provider.requests[2], hasLength(1)); // the prompt alone
+        });
+      },
+    );
+
+    test('/new with a prompt carries a summary when Gemini says so', () async {
+      final provider = FakeProvider([
+        say('Paris'),
+        say('[CompactedSummaryFromModel]\n- The capital of France is Paris.'),
+        say('Lyon'),
+      ]);
+
+      await testNocterm('new carried', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: provider, model: 'fake'),
+        );
+
+        await type(tester, 'capital of France?');
+        await type(tester, '/new and the second city?');
+        await tester.pump();
+
+        expect(active(tester), 'second city');
+        expect(tester.terminalState, containsText('so a summary of it came'));
+        expect(
+          tester.terminalState,
+          containsText('- The capital of France is Paris.'),
+        );
+        expect(tester.terminalState, containsText('Lyon'));
+        final sent = provider.requests[2];
+        expect(sent, hasLength(2)); // the summary, then the prompt
+        expect((sent.first.parts.single as TextPart).text, contains('Paris'));
+      });
+    });
+
+    test(
+      '/new with a prompt from an empty session makes no extra call',
+      () async {
+        final provider = FakeProvider([say('hi')]);
+
+        await testNocterm('new empty', size: wide, (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(provider: provider, model: 'fake'),
+          );
+
+          await type(tester, '/new hello there');
+          await tester.pump();
+
+          expect(
+            tester.terminalState,
+            containsText('session 1 has no chat yet, so this starts fresh.'),
+          );
+          expect(provider.requests, hasLength(1));
+        });
+      },
+    );
+
+    test(
+      'dragging a session in splits the screen, and out unsplits it',
+      () async {
+        final provider = FakeProvider([say('Paris'), say('Rome'), say('Lyon')]);
+
+        await testNocterm('split', size: wide, (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(provider: provider, model: 'fake'),
+          );
+          await type(tester, 'capital of France?');
+          await type(tester, '/new');
+          await type(tester, 'capital of Italy?');
+          expect(tester.terminalState, isNot(containsText('Paris')));
+
+          final row = tester.terminalState.findText('capital France').first;
+          await drag(tester, row, 80, 12);
+
+          expect(tester.terminalState, containsText('Paris'));
+          expect(tester.terminalState, containsText('Rome'));
+          expect(active(tester), 'capital Italy');
+
+          // clicking the France pane gives it the keyboard
+          final paris = tester.terminalState.findText('Paris').single;
+          await click(tester, paris.x, paris.y);
+          expect(active(tester), 'capital France');
+          await type(tester, 'second city?');
+          expect(provider.requests.last, hasLength(3));
+
+          // drag the France pane by its title back to the sidebar
+          final title = tester.terminalState
+              .findText('capital France')
+              .firstWhere((m) => m.x > 36);
+          await drag(tester, title, 5, 20);
+
+          expect(tester.terminalState, isNot(containsText('Lyon')));
+          expect(tester.terminalState, containsText('Rome'));
+          expect(active(tester), 'capital Italy');
+        });
+      },
+    );
+
+    test('a third session goes below the first two', () async {
+      await testNocterm('three panes', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake'),
+        );
+        await type(tester, '/new');
+        await type(tester, '/new');
+
+        await drag(
+          tester,
+          tester.terminalState.findText('session 1').first,
+          80,
+          12,
+        );
+        await drag(
+          tester,
+          tester.terminalState.findText('session 2').first,
+          80,
+          25,
+        );
+
+        // each pane's title has its name, next to the sidebar's three rows
+        for (final name in ['session 1', 'session 2', 'session 3']) {
+          expect(tester.terminalState.findText(name), hasLength(2));
+        }
+        final third = tester.terminalState
+            .findText('session 2')
+            .firstWhere((m) => m.x > 36);
+        expect(third.y, 15); // the bottom row starts half way down
+      });
+    });
+
+    test("each session types into its own input", () async {
+      // nocterm's TextField keeps the first controller it was given, so a
+      // session drawn where another was would type into the other's input
+      await testNocterm('fresh input', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([say('hi')]), model: 'fake'),
+        );
+
+        await type(tester, '/new');
+        await type(tester, '/new');
+        await type(tester, '/new hello there');
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('> hello there'));
+        expect(tester.terminalState, isNot(containsText('/new hello')));
+      });
+    });
+
+    test('« folds the sidebar into a rail, and » brings it back', () async {
+      await testNocterm('fold', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake'),
+        );
+        await type(tester, '/new');
+
+        final fold = tester.terminalState.findText('«').single;
+        await click(tester, fold.x, fold.y);
+        expect(tester.terminalState, isNot(containsText('Sessions')));
+        expect(tester.terminalState, containsText('▸>_'));
+
+        final unfold = tester.terminalState.findText('»').single;
+        await click(tester, unfold.x, unfold.y);
+        expect(tester.terminalState, containsText('Sessions'));
+      });
+    });
+
+    test('a narrow terminal shows the rail', () async {
+      await testNocterm('narrow', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake'),
+        );
+        await type(tester, '/new');
+
+        expect(tester.terminalState, containsText('»'));
+        expect(tester.terminalState, isNot(containsText('Sessions')));
+      });
+    });
+  });
 }
