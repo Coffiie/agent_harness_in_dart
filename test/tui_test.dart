@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:coding_agent_in_dart/src/design_system/colors.dart';
@@ -1140,6 +1141,154 @@ void main() {
 
         expect(tester.terminalState, containsText('»'));
         expect(tester.terminalState, isNot(containsText('Sessions')));
+      });
+    });
+  });
+
+  group('/phone', () {
+    const wide = Size(120, 30);
+
+    Future<void> type(NoctermTester tester, String text) async {
+      await tester.enterText(text);
+      await tester.sendEnter();
+      await tester.pump();
+    }
+
+    // lets real sockets talk, then draws
+    Future<void> settle(NoctermTester tester) async {
+      for (var i = 0; i < 4; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        await tester.pump();
+      }
+    }
+
+    // connects like the app would, with the port and code /phone showed
+    Future<(WebSocket, List<Map<String, dynamic>>)> connect(
+      NoctermTester tester,
+    ) async {
+      final screen = tester.terminalState.getText();
+      final match = RegExp(r':(\d+) with the code (\d{6})').firstMatch(screen)!;
+      final socket = await WebSocket.connect(
+        'ws://127.0.0.1:${match[1]}/?code=${match[2]}',
+      );
+      final got = <Map<String, dynamic>>[];
+      socket.listen((data) => got.add(jsonDecode(data as String)));
+      addTearDown(socket.close);
+      await settle(tester);
+      return (socket, got);
+    }
+
+    test('shows where to connect, and when a phone is connected', () async {
+      await testNocterm('phone pair', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake', phonePort: 0),
+        );
+
+        await type(tester, '/phone');
+        await settle(tester);
+        expect(tester.terminalState, containsText('In the phone app, connect'));
+        expect(tester.terminalState, containsText('phone code'));
+
+        await connect(tester);
+        expect(tester.terminalState, containsText('phone connected'));
+      });
+    });
+
+    test(
+      'runs a prompt from the phone, tagged, and sends the reply back',
+      () async {
+        await testNocterm('phone prompt', size: wide, (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(
+              provider: FakeProvider([say('Paris')]),
+              model: 'fake',
+              phonePort: 0,
+            ),
+          );
+          await type(tester, '/phone');
+          await settle(tester);
+          final (socket, got) = await connect(tester);
+
+          socket.add(
+            jsonEncode({
+              'type': 'prompt',
+              'session': 1,
+              'text': 'capital of France?',
+            }),
+          );
+          await settle(tester);
+
+          expect(tester.terminalState, containsText('> capital of France?'));
+          expect(tester.terminalState, containsText('from phone'));
+          expect(tester.terminalState, containsText('Paris'));
+          final sent = [
+            for (final m in got)
+              if (m['type'] == 'entries') ...m['entries'],
+          ];
+          expect(sent, contains(equals({'kind': 'reply', 'text': 'Paris'})));
+        });
+      },
+    );
+
+    test('the phone cannot quit the app', () async {
+      await testNocterm('phone exit', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'fake', phonePort: 0),
+        );
+        await type(tester, '/phone');
+        await settle(tester);
+        final (socket, _) = await connect(tester);
+
+        socket.add(
+          jsonEncode({'type': 'prompt', 'session': 1, 'text': '/exit'}),
+        );
+        await settle(tester);
+
+        expect(tester.terminalState, containsText('phone connected'));
+      });
+    });
+
+    test('a question answered on the phone closes the picker', () async {
+      final provider = FakeProvider([
+        Message(Role.assistant, [
+          ToolCall('askUser', {
+            'question': 'Print or return?',
+            'options': ['Return', 'Print'],
+          }),
+        ]),
+        say('Printing it is'),
+      ]);
+
+      await testNocterm('phone answer', size: wide, (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: provider, model: 'fake', phonePort: 0),
+        );
+        await type(tester, '/phone');
+        await settle(tester);
+        final (socket, got) = await connect(tester);
+
+        await type(tester, 'write hanoi');
+        await settle(tester);
+        expect(tester.terminalState, containsText('Something else…'));
+        final asked = [
+          for (final m in got)
+            if (m['type'] == 'entries')
+              for (final e in m['entries'])
+                if (e['kind'] == 'question') e,
+        ].single;
+
+        socket.add(
+          jsonEncode({
+            'type': 'answer',
+            'question': asked['id'],
+            'choice': 'Print',
+          }),
+        );
+        await settle(tester);
+
+        expect(tester.terminalState, containsText('✓ Print'));
+        expect(tester.terminalState, containsText('Printing it is'));
+        expect(got.where((m) => m['type'] == 'answered'), hasLength(1));
       });
     });
   });

@@ -13,9 +13,12 @@ sealed class Entry {
 }
 
 class PromptEntry extends Entry {
-  const PromptEntry(this.text);
+  const PromptEntry(this.text, {this.fromPhone = false});
 
   final String text;
+
+  /// Sent from the phone app.
+  final bool fromPhone;
 }
 
 class EventEntry extends Entry {
@@ -79,7 +82,16 @@ String sessionName(String prompt) {
 /// One chat in the TUI, with its own agent, transcript, input and Term.
 /// The app keeps several and shows one, or a grid of them.
 class Session {
-  Session(this.name, this.agent, this.history, {required this.onChange});
+  Session(
+    this.id,
+    this.name,
+    this.agent,
+    this.history, {
+    required this.onChange,
+  });
+
+  /// Unique for the app's lifetime, so the phone can tell sessions apart.
+  final int id;
 
   /// "session 2" until the first prompt names it.
   String name;

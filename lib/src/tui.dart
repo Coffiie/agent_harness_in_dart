@@ -12,6 +12,7 @@ import 'events.dart';
 import 'history.dart';
 import 'messages.dart';
 import 'model_provider.dart';
+import 'phone.dart';
 import 'question.dart';
 import 'session.dart';
 import 'settings.dart';
@@ -30,7 +31,10 @@ const _railWidth = 8;
 const _railBelow = 110;
 
 /// The commands that work while the session is busy.
-const _anytime = {'/new', '/settings', '/exit'};
+const _anytime = {'/new', '/settings', '/exit', '/phone'};
+
+/// The commands the phone can't send: they belong to the terminal.
+const _terminalOnly = {'/exit', '/settings', '/phone'};
 
 /// 3318 -> "3,318".
 String grouped(int n) =>
@@ -130,6 +134,7 @@ class HarnessApp extends StatefulComponent {
     required this.model,
     this.settingsFile,
     this.onQuestion,
+    this.phonePort = 4545,
   });
 
   final ModelProvider provider;
@@ -142,6 +147,9 @@ class HarnessApp extends StatefulComponent {
   /// Called with each question the model asks, so something else can
   /// answer it too. The first answer wins.
   final void Function(Question question)? onQuestion;
+
+  /// Where /phone listens, or a free port when it's taken.
+  final int phonePort;
 
   @override
   State<HarnessApp> createState() => _HarnessAppState();
@@ -172,6 +180,12 @@ class _HarnessAppState extends State<HarnessApp> {
   var _settingsOpen = false;
   var _choice = 0;
 
+  // The phone app's server and the copy of every session it's sent, once
+  // /phone starts them.
+  PhoneServer? _phone;
+  PhoneMirror? _mirror;
+  StreamSubscription<Map<String, dynamic>>? _phoneMessages;
+
   Agent _agent(
     FileHistory history, [
     Iterable<Message> conversation = const [],
@@ -184,8 +198,10 @@ class _HarnessAppState extends State<HarnessApp> {
 
   Session _newSession([Iterable<Message> conversation = const []]) {
     final history = FileHistory();
+    final id = ++_made;
     return Session(
-      'session ${++_made}',
+      id,
+      'session $id',
       _agent(history, conversation),
       history,
       onChange: () {
@@ -203,6 +219,8 @@ class _HarnessAppState extends State<HarnessApp> {
 
   @override
   void dispose() {
+    _phoneMessages?.cancel();
+    _phone?.close();
     for (final session in _sessions) {
       session.dispose();
     }
@@ -345,11 +363,16 @@ class _HarnessAppState extends State<HarnessApp> {
 
   // ---- prompts and commands ----
 
-  Future<void> _submit(Session session, String prompt) async {
+  Future<void> _submit(
+    Session session,
+    String prompt, {
+    bool fromPhone = false,
+  }) async {
     final text = prompt.trim();
     // while a session works, it can still open another session
     if (text.isEmpty || session.busy && !_anytime.contains(text)) return;
-    session.input.clear();
+    if (fromPhone && _terminalOnly.contains(text)) return;
+    if (!fromPhone) session.input.clear();
 
     switch (text) {
       case '/exit':
@@ -383,22 +406,73 @@ class _HarnessAppState extends State<HarnessApp> {
           _choice = _settings.theme.index;
         });
         return;
+      case '/phone':
+        await _startPhone(session);
+        return;
     }
     if (text.startsWith('/new ')) {
       await _newFor(session, text.substring(5).trim());
       return;
     }
-    await _run(session, text);
+    await _run(session, text, fromPhone: fromPhone);
   }
 
-  Future<void> _run(Session session, String prompt, {bool echo = true}) async {
+  // Starts the phone app's server, once, and says how to connect.
+  Future<void> _startPhone(Session session) async {
+    if (_phone == null || _phone!.closed) {
+      final phone = await PhoneServer.start(
+        port: component.phonePort,
+        onChange: () {
+          if (mounted) setState(() {});
+        },
+      );
+      final mirror = PhoneMirror(
+        phone,
+        () => _sessions,
+        spent: (s) => _price == null ? null : dollars(s.spent),
+      );
+      phone.onConnect = mirror.hello;
+      _phoneMessages?.cancel();
+      _phoneMessages = phone.received.listen(
+        (message) => mirror.receive(
+          message,
+          prompt: (target, text) => _submit(target, text, fromPhone: true),
+        ),
+      );
+      _phone = phone;
+      _mirror = mirror;
+    }
+    final phone = _phone!;
+    final addresses = await PhoneServer.addresses();
+    if (!mounted) return;
+    setState(() {
+      session.entries.add(const PromptEntry('/phone'));
+      session.entries.add(
+        NoteEntry(
+          'In the phone app, connect to '
+          '${addresses.isEmpty ? 'this computer' : addresses.first}:'
+          '${phone.port} with the code ${phone.code}.',
+          detail:
+              'The phone has to be on the same Wi-Fi, or on Tailscale.'
+              '${addresses.length > 1 ? ' Other addresses: ${addresses.skip(1).map((a) => '$a:${phone.port}').join(', ')}' : ''}',
+        ),
+      );
+    });
+  }
+
+  Future<void> _run(
+    Session session,
+    String prompt, {
+    bool echo = true,
+    bool fromPhone = false,
+  }) async {
     setState(() {
       if (!session.named && !prompt.startsWith('/')) {
         session
           ..name = sessionName(prompt)
           ..named = true;
       }
-      if (echo) session.entries.add(PromptEntry(prompt));
+      if (echo) session.entries.add(PromptEntry(prompt, fromPhone: fromPhone));
       session.busy = true;
       session.setMood(Mood.working);
     });
@@ -633,6 +707,8 @@ class _HarnessAppState extends State<HarnessApp> {
             builder: (context, constraints) {
               _width = constraints.maxWidth.toInt();
               _height = constraints.maxHeight.toInt();
+              // the phones get whatever this frame changed
+              if (_mirror case final mirror?) scheduleMicrotask(mirror.sync);
               return _screen(colors);
             },
           ),
@@ -739,6 +815,8 @@ class _HarnessAppState extends State<HarnessApp> {
         children: [
           for (final session in _sessions) _sessionRow(session, colors),
           Expanded(child: SizedBox()),
+          if (_phone case final phone? when phone.connected)
+            Text('● phone connected', style: TextStyle(color: colors.tool)),
           for (final hint in [
             _dropsOut ? 'drop here to unsplit' : 'drag a session in to split',
             'Ctrl+Tab or Shift+Tab  next',
@@ -948,8 +1026,8 @@ class _HarnessAppState extends State<HarnessApp> {
       focused: active,
       onSubmitted: (prompt) => _submit(session, prompt),
       placeholder: boxed
-          ? 'Ask anything, or /new, /fork, /undo, /compact, /clear, '
-                '/settings, /exit'
+          ? 'Ask anything · /new /fork /undo /phone /compact /clear '
+                '/settings /exit'
           : 'Ask anything',
       placeholderStyle: TextStyle(color: colors.secondary),
       style: TextStyle(color: colors.primary),
@@ -1096,9 +1174,20 @@ class _HarnessAppState extends State<HarnessApp> {
                     ..._counters(session, colors),
                   ],
                 ),
-                Text(
-                  '${component.model} · ${_cwd()}',
-                  style: TextStyle(color: colors.secondary),
+                Row(
+                  children: [
+                    Text(
+                      '${component.model} · ${_cwd()}',
+                      style: TextStyle(color: colors.secondary),
+                    ),
+                    if (_phone case final phone? when !phone.closed)
+                      Text(
+                        phone.connected
+                            ? ' · phone connected'
+                            : ' · phone code ${phone.code}',
+                        style: TextStyle(color: colors.tool),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -1150,9 +1239,15 @@ class _HarnessAppState extends State<HarnessApp> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 1),
       child: switch (entry) {
-        PromptEntry(:final text) => Text(
-          '> $text',
-          style: TextStyle(color: colors.secondary),
+        PromptEntry(:final text, :final fromPhone) => Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Text('> $text', style: TextStyle(color: colors.secondary)),
+            ),
+            if (fromPhone)
+              Text('  from phone', style: TextStyle(color: colors.accent)),
+          ],
         ),
         EventEntry(:final event) => _event(session, event, colors),
         UndoEntry(:final undo) => _undone(undo, colors),
