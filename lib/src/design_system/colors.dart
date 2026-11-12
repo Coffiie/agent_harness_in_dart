@@ -15,7 +15,7 @@ class AppColorsTheme {
   /// Behind inline code and code blocks.
   final Color secondaryContainer;
 
-  /// The app name and the spinner.
+  /// The app name and Term.
   final Color accent;
 
   /// The input box and its cursor.
