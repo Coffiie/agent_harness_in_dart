@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:coding_agent_in_dart/src/design_system/colors.dart';
+import 'package:coding_agent_in_dart/src/history.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/settings.dart';
@@ -16,6 +17,7 @@ class FakeProvider implements ModelProvider {
 
   final List<Message> replies;
   final systems = <String?>[];
+  final requests = <List<Message>>[];
 
   @override
   Future<Message> generate(
@@ -24,6 +26,7 @@ class FakeProvider implements ModelProvider {
     String? system,
   }) async {
     systems.add(system);
+    requests.add(List.of(messages));
     return replies.removeAt(0);
   }
 
@@ -238,6 +241,131 @@ void main() {
         await tester.sendEnter();
         await tester.pump();
         expect(tester.terminalState, containsText('▙ >_ ▟'));
+      });
+    });
+  });
+
+  group('/undo', () {
+    late Directory dir;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync();
+      addTearDown(() => dir.deleteSync(recursive: true));
+    });
+
+    Message update(String path, String content) => Message(Role.assistant, [
+      ToolCall('updateFile', {'path': path, 'content': content}),
+    ]);
+
+    test('puts the file back, shows the diff and tells the model', () async {
+      final path = '${dir.path}/a.txt';
+      File(path).writeAsStringSync('one\ntwo\n');
+      final provider = FakeProvider([
+        update(path, 'one\n2\n'),
+        say('changed'),
+        say('ok'),
+      ]);
+
+      await testNocterm('undo', (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+
+        await tester.enterText('edit it');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+        expect(File(path).readAsStringSync(), 'one\n2\n');
+
+        await tester.enterText('/undo');
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(File(path).readAsStringSync(), 'one\ntwo\n');
+        expect(tester.terminalState, containsText('↺ Undid UpdateFile(path: '));
+        expect(tester.terminalState, containsText('2 - 2'));
+        expect(tester.terminalState, containsText('2 + two'));
+        expect(
+          tester.terminalState,
+          containsText('The model was told this edit was undone.'),
+        );
+        expect(tester.terminalState, containsText('▙ << ▟'));
+
+        await tester.enterText('next');
+        await tester.sendEnter();
+        await tester.pump();
+      });
+
+      final sent = provider.requests.last.last.parts;
+      expect((sent.first as TextPart).text, undoNote(Undo(path)));
+      expect((sent.last as TextPart).text, 'next');
+    });
+
+    test('deletes a file the agent created', () async {
+      final path = '${dir.path}/new.txt';
+
+      await testNocterm('undo created', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([update(path, 'x\n'), say('made it')]),
+            model: 'f',
+          ),
+        );
+
+        await tester.enterText('make a file');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+        await tester.enterText('/undo');
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(File(path).existsSync(), isFalse);
+        expect(
+          tester.terminalState,
+          containsText('That edit created the file, so it is deleted.'),
+        );
+      });
+    });
+
+    test('says so when there is nothing to undo', () async {
+      await testNocterm('undo nothing', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: FakeProvider([]), model: 'f'),
+        );
+
+        await tester.enterText('/undo');
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('┃ Nothing to undo.'));
+        expect(tester.terminalState, containsText('▙ >_ ▟'));
+      });
+    });
+
+    test('/clear starts over with nothing to undo', () async {
+      final path = '${dir.path}/a.txt';
+      File(path).writeAsStringSync('old');
+
+      await testNocterm('undo after clear', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([update(path, 'new'), say('ok')]),
+            model: 'f',
+          ),
+        );
+
+        await tester.enterText('edit');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+        await tester.enterText('/clear');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.enterText('/undo');
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('┃ Nothing to undo.'));
+        expect(File(path).readAsStringSync(), 'new');
       });
     });
   });

@@ -31,7 +31,7 @@ void main(List<String> arguments) async {
   }
 
   final gemini = GeminiProvider(apiKey);
-  final agent = Agent(gemini, fileTools);
+  final agent = Agent(gemini, fileTools());
 
   print(divider());
   print('Chat with ${gemini.model}: (press ctrl-c to exit)');

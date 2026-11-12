@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'diff.dart';
+import 'history.dart';
 
 class Tool {
   Tool({
@@ -22,7 +23,9 @@ class Tool {
   final List<DiffLine> Function(Map<String, dynamic> args)? diff;
 }
 
-final fileTools = [
+/// The tools that read, list and update files. With a [history],
+/// updateFile records every edit it makes, so /undo can take it back.
+List<Tool> fileTools({FileHistory? history}) => [
   Tool(
     name: 'readFile',
     description: 'Read the contents of a file from a given path',
@@ -64,7 +67,8 @@ final fileTools = [
       'required': ['path', 'content'],
     },
     label: (args) => 'UpdateFile(path: ${args['path']})',
-    run: (args) => _updateFile(args['path'] as String, args['content']),
+    run: (args) =>
+        _updateFile(args['path'] as String, args['content'], history),
     diff: (args) => _fileDiff(args['path'], args['content']),
   ),
 ];
@@ -104,10 +108,16 @@ List<DiffLine> _fileDiff(Object? path, Object? content) {
 }
 
 //update file contents from a given path and content
-Future<Map<String, dynamic>> _updateFile(String path, content) async {
+Future<Map<String, dynamic>> _updateFile(
+  String path,
+  content,
+  FileHistory? history,
+) async {
   try {
     final file = File(path);
+    final before = file.existsSync() ? file.readAsStringSync() : null;
     await file.writeAsString(content);
+    history?.record(Edit(path, before: before, after: content));
     return {'status': 'success'};
   } catch (e) {
     return {'status': 'error', 'message': e.toString()};

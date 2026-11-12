@@ -52,7 +52,7 @@ void main() {
       const Message(Role.user, [
         ToolResult('readFile', {'content': 'x'}),
       ]),
-    ], tools: fileTools);
+    ], tools: fileTools());
 
     final request = requests.single;
     expect(
