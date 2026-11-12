@@ -1,4 +1,5 @@
 import 'diff.dart';
+import 'question.dart';
 import 'usage.dart';
 
 sealed class AgentEvent {
@@ -16,6 +17,14 @@ class ToolStarted extends AgentEvent {
 
   final String label;
   final List<DiffLine> diff;
+}
+
+/// The model asked the user something, and the turn waits until
+/// [question] is answered.
+class Asked extends AgentEvent {
+  const Asked(this.question);
+
+  final Question question;
 }
 
 /// The tokens one model call used. Comes after every call that reports

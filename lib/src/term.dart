@@ -18,6 +18,9 @@ enum Mood {
 
   /// The user ran /undo.
   undo,
+
+  /// The model asked the user something and waits for the answer.
+  needs,
 }
 
 /// One eye going round a square, clockwise: top left, top right, bottom
@@ -32,6 +35,7 @@ String face(Mood mood, int frame) => switch (mood) {
   Mood.done => '^^',
   Mood.error => '××',
   Mood.undo => '<<',
+  Mood.needs => '??',
 };
 
 /// Term's two rows: a little terminal with [face] on its screen.

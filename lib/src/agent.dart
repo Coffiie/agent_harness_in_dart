@@ -69,6 +69,12 @@ class Agent {
             tool.label(call.args),
             diff: tool.diff?.call(call.args) ?? const [],
           );
+          if (tool.ask?.call(call.args) case final question?) {
+            yield Asked(question);
+            final answer = await question.answer;
+            results.add(ToolResult(call.name, {'answer': answer}));
+            continue;
+          }
           results.add(ToolResult(call.name, await tool.run(call.args)));
         }
 

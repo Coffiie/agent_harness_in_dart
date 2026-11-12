@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'diff.dart';
 import 'history.dart';
+import 'question.dart';
 
 class Tool {
   Tool({
@@ -11,6 +12,7 @@ class Tool {
     required this.label,
     required this.run,
     this.diff,
+    this.ask,
   });
 
   final String name;
@@ -21,6 +23,10 @@ class Tool {
 
   /// What [run] is about to change, worked out by the harness, not the model.
   final List<DiffLine> Function(Map<String, dynamic> args)? diff;
+
+  /// For a tool the user answers: the question to put to them. When it
+  /// returns one, the agent waits for the answer instead of calling [run].
+  final Question? Function(Map<String, dynamic> args)? ask;
 }
 
 /// The tools that read, list and update files. With a [history],

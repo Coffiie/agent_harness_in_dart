@@ -12,6 +12,7 @@ import 'diff.dart';
 import 'events.dart';
 import 'history.dart';
 import 'model_provider.dart';
+import 'question.dart';
 import 'settings.dart';
 import 'term.dart';
 import 'tools.dart';
@@ -37,7 +38,9 @@ const systemPrompt =
     'see the diff or the changes: that diff is already on screen, so point '
     'them to it. Do not paste the code you just wrote unless the user asks '
     'for the code. After an edit, say in a sentence or two what you changed '
-    'and why.';
+    'and why. When you need the user to decide something, call askUser with '
+    'the choices, the one you recommend first, instead of asking in a '
+    'reply.';
 
 sealed class Entry {
   const Entry();
@@ -77,6 +80,7 @@ class HarnessApp extends StatefulComponent {
     required this.provider,
     required this.model,
     this.settingsFile,
+    this.onQuestion,
   });
 
   final ModelProvider provider;
@@ -85,6 +89,10 @@ class HarnessApp extends StatefulComponent {
   /// Where /settings saves its choices. With none, they last until the app
   /// quits.
   final File? settingsFile;
+
+  /// Called with each question the model asks, so something else can
+  /// answer it too. The first answer wins.
+  final void Function(Question question)? onQuestion;
 
   @override
   State<HarnessApp> createState() => _HarnessAppState();
@@ -113,15 +121,22 @@ class _HarnessAppState extends State<HarnessApp> {
 
   Price? get _price => _settings.prices[component.model];
 
+  // The question the model is waiting on, if any. [_pick] is the
+  // highlighted choice, where one past the last option is "Something
+  // else…", and [_typing] means the user is writing their own answer.
+  Question? _question;
+  var _pick = 0;
+  var _typing = false;
+  final _answerInput = TextEditingController();
+
   late var _settings = Settings.load(component.settingsFile);
   var _settingsOpen = false;
   var _choice = 0;
 
-  Agent _newAgent() => Agent(
-    component.provider,
-    fileTools(history: _history),
-    system: systemPrompt,
-  );
+  Agent _newAgent() => Agent(component.provider, [
+    ...fileTools(history: _history),
+    askUserTool,
+  ], system: systemPrompt);
 
   @override
   void initState() {
@@ -140,7 +155,7 @@ class _HarnessAppState extends State<HarnessApp> {
     final every = switch (_mood) {
       Mood.waiting => const Duration(milliseconds: 600),
       Mood.working => const Duration(milliseconds: 250),
-      Mood.done || Mood.error || Mood.undo => null,
+      Mood.done || Mood.error || Mood.undo || Mood.needs => null,
     };
     _ticker = every == null
         ? null
@@ -151,6 +166,7 @@ class _HarnessAppState extends State<HarnessApp> {
   void dispose() {
     _ticker?.cancel();
     _input.dispose();
+    _answerInput.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -207,6 +223,9 @@ class _HarnessAppState extends State<HarnessApp> {
           case AgentError():
             failed = true;
             _entries.add(EventEntry(event));
+          case Asked(:final question):
+            _entries.add(EventEntry(event));
+            _ask(question);
           default:
             _entries.add(EventEntry(event));
         }
@@ -218,6 +237,55 @@ class _HarnessAppState extends State<HarnessApp> {
       _busy = false;
       _setMood(failed ? Mood.error : Mood.done);
     });
+  }
+
+  // Shows the picker until the question is answered, here or elsewhere.
+  void _ask(Question question) {
+    _question = question;
+    _pick = 0;
+    _typing = false;
+    _setMood(Mood.needs);
+    component.onQuestion?.call(question);
+    question.answer.then((_) {
+      if (!mounted || !identical(_question, question)) return;
+      setState(() {
+        _question = null;
+        _typing = false;
+        _answerInput.clear();
+        _setMood(Mood.working);
+      });
+    });
+  }
+
+  bool _onAskKey(KeyboardEvent event) {
+    final question = _question!;
+    final count = question.options.length + 1; // the options, then "else"
+
+    void choose(int index) => index < question.options.length
+        ? question.reply(question.options[index])
+        : setState(() => _typing = true);
+
+    switch (event.logicalKey) {
+      case LogicalKey.arrowUp:
+        setState(() => _pick = (_pick - 1) % count);
+      case LogicalKey.arrowDown:
+        setState(() => _pick = (_pick + 1) % count);
+      case LogicalKey.enter:
+        choose(_pick);
+      default:
+        final n = int.tryParse(event.character ?? '');
+        if (n == null || n < 1 || n > count) return false;
+        choose(n - 1);
+    }
+    return true;
+  }
+
+  void _submitAnswer(String answer) {
+    if (answer.trim().isEmpty) {
+      setState(() => _typing = false); // back to the choices
+      return;
+    }
+    _question?.reply(answer.trim());
   }
 
   // Puts back the file the agent's last edit changed, and tells the model.
@@ -293,7 +361,14 @@ class _HarnessAppState extends State<HarnessApp> {
             ),
           ),
           _status(colors),
-          if (_settingsOpen) _settingsPanel(colors) else _inputField(colors),
+          if (_settingsOpen)
+            _settingsPanel(colors)
+          else if (_question != null && _typing)
+            _answerField(colors)
+          else if (_question != null)
+            _askPanel(colors)
+          else
+            _inputField(colors),
         ],
       ),
     );
@@ -314,6 +389,45 @@ class _HarnessAppState extends State<HarnessApp> {
           style: BoxBorderStyle.rounded,
         ),
         contentPadding: const EdgeInsets.symmetric(horizontal: 1),
+      ),
+    );
+  }
+
+  Component _answerField(AppColorsTheme colors) {
+    return TextField(
+      controller: _answerInput,
+      focused: true,
+      onSubmitted: _submitAnswer,
+      placeholder: 'Type your answer · Enter sends it · empty goes back',
+      placeholderStyle: TextStyle(color: colors.secondary),
+      style: TextStyle(color: colors.primary),
+      cursorColor: colors.focus,
+      decoration: InputDecoration(
+        border: BoxBorder.all(
+          color: colors.accent,
+          style: BoxBorderStyle.rounded,
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 1),
+      ),
+    );
+  }
+
+  Component _askPanel(AppColorsTheme colors) {
+    return Focusable(
+      focused: true,
+      onKeyEvent: _onAskKey,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 1),
+        decoration: BoxDecoration(
+          border: BoxBorder.all(
+            color: colors.accent,
+            style: BoxBorderStyle.rounded,
+          ),
+        ),
+        child: Text(
+          '↑ ↓ choose · Enter answers · or press a number',
+          style: TextStyle(color: colors.secondary),
+        ),
       ),
     );
   }
@@ -434,7 +548,7 @@ class _HarnessAppState extends State<HarnessApp> {
   Component _status(AppColorsTheme colors) {
     return SizedBox(
       height: 1,
-      child: _busy
+      child: _busy && _question == null
           ? Text(
               '${face(Mood.working, _frame)} Thinking…',
               style: TextStyle(color: colors.accent),
@@ -484,11 +598,73 @@ class _HarnessAppState extends State<HarnessApp> {
         style: TextStyle(color: colors.tool),
       ),
       UsageReported() => const SizedBox(),
+      Asked(:final question) => _asked(question, colors),
       AgentError(:final message) => Text(
         'Error: $message',
         style: TextStyle(color: colors.error),
       ),
     };
+  }
+
+  // The question, its choices while it waits (the recommended one first),
+  // then the answer.
+  Component _asked(Question question, AppColorsTheme colors) {
+    final waiting = identical(question, _question) && !question.answered;
+    final options = [...question.options, if (waiting) 'Something else…'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '? ',
+              style: TextStyle(
+                color: colors.accent,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            Expanded(
+              child: Text(
+                question.text,
+                style: TextStyle(
+                  color: colors.primary,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        if (!waiting)
+          Text(
+            '  ✓ ${question.chosen ?? ''}',
+            style: TextStyle(color: colors.tool),
+          )
+        else
+          for (final (i, option) in options.indexed)
+            Row(
+              children: [
+                Text(
+                  i == _pick && !_typing ? '  ❯ ' : '    ',
+                  style: TextStyle(color: colors.accent),
+                ),
+                Text(
+                  '${i + 1}. $option',
+                  style: TextStyle(
+                    color: i == _pick && !_typing
+                        ? colors.accent
+                        : colors.primary,
+                    fontWeight: i == _pick && !_typing
+                        ? FontWeight.bold
+                        : FontWeight.normal,
+                  ),
+                ),
+                if (i == 0)
+                  Text(' (recommended)', style: TextStyle(color: colors.tool)),
+              ],
+            ),
+      ],
+    );
   }
 
   Component _undone(Undo? undo, AppColorsTheme colors) {
