@@ -179,6 +179,10 @@ class EntryView extends StatelessWidget {
           Diff(lines: (entry['diff'] as List).cast<Map<String, dynamic>>()),
       ],
     ),
+    'output' => Output(
+      text: entry['text'] as String,
+      failed: entry['failed'] == true,
+    ),
     'error' => Text(
       'Error: ${entry['text']}',
       style: mono.copyWith(color: Graphite.error),
@@ -202,6 +206,35 @@ class EntryView extends StatelessWidget {
       ],
     ),
   };
+}
+
+/// A tool's output under it: its last lines, red when it failed.
+class Output extends StatelessWidget {
+  const Output({super.key, required this.text, required this.failed});
+
+  static const rows = 12;
+
+  final String text;
+  final bool failed;
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = text.split('\n');
+    final cut = lines.length - rows;
+    return Padding(
+      padding: const EdgeInsets.only(left: 14, top: 2),
+      child: Text(
+        [
+          if (cut > 0) '… $cut lines above',
+          ...lines.skip(cut > 0 ? cut : 0),
+        ].join('\n'),
+        style: mono.copyWith(
+          fontSize: 12,
+          color: failed ? Graphite.error : Graphite.secondary,
+        ),
+      ),
+    );
+  }
 }
 
 /// A file edit's lines, added ones green and removed ones red, scrolling

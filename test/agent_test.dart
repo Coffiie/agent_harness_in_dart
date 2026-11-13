@@ -75,6 +75,46 @@ void main() {
     expect(result.output, {'echo': 'ping'});
   });
 
+  test("yields what a tool said back when it's for the user", () async {
+    Tool says(String name, Map<String, dynamic> result) => Tool(
+      name: name,
+      description: name,
+      parameters: {},
+      label: (_) => name,
+      run: (_) async => result,
+    );
+    final provider = FakeProvider([
+      call('passes', {}),
+      call('quiet', {}),
+      call('quietFail', {}),
+      call('fails', {}),
+      call('missing', {}),
+      call('refused', {}),
+      call('echo', {'text': 'ping'}),
+      say('ok'),
+    ]);
+
+    final events = await Agent(provider, [
+      says('passes', {'exitCode': 0, 'output': 'All tests passed!'}),
+      says('quiet', {'exitCode': 0, 'output': ''}),
+      says('quietFail', {'exitCode': 2, 'output': '\n'}),
+      says('fails', {'exitCode': 1, 'output': 'Some tests failed.'}),
+      says('missing', {'error': 'No such file or directory'}),
+      says('refused', {'status': 'error', 'message': 'Read-only file system'}),
+      echo,
+    ]).send('go').toList();
+
+    expect(events.whereType<ToolFinished>().map((e) => (e.output, e.failed)), [
+      ('All tests passed!', false),
+      ('exit code 2', true),
+      ('Some tests failed.', true),
+      ('No such file or directory', true),
+      ('Read-only file system', true),
+    ]);
+    // echo's result is only for the model
+    expect(events[events.length - 2], isA<ToolStarted>());
+  });
+
   test('answers a call to an unknown tool with an error', () async {
     final provider = FakeProvider([call('nope', {}), say('ok')]);
 

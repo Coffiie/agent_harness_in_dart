@@ -50,6 +50,8 @@ void main(List<String> arguments) async {
           print('${gemini.model}: $text');
         case ToolStarted(:final label):
           print('${toolSeparator()} $label\n');
+        case ToolFinished(:final output):
+          print('${output.trimRight()}\n');
         case CompactionStarted():
           print('${toolSeparator()} Summarizing Conversation...\n');
         case Compacted(:final before, :final after):

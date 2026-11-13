@@ -7,6 +7,7 @@ import 'package:coding_agent_in_dart/src/history.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/question.dart';
+import 'package:coding_agent_in_dart/src/sandbox.dart';
 import 'package:coding_agent_in_dart/src/settings.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:coding_agent_in_dart/src/tui.dart';
@@ -171,6 +172,271 @@ void main() {
 
     expect(provider.systems, [systemPrompt]);
     expect(systemPrompt, contains('Never write a diff'));
+  });
+
+  group('sandbox', () {
+    late Directory dir;
+    late File settings;
+    late List<String> calls;
+
+    setUp(() {
+      dir = Directory.systemTemp.createTempSync();
+      settings = File('${dir.path}/settings.json');
+      calls = [];
+    });
+    tearDown(() => dir.deleteSync(recursive: true));
+
+    // A sandbox on a fake Docker, whose commands print [output].
+    Future<Sandbox> box({String output = '', int code = 0, bool up = true}) =>
+        Sandbox.start(
+          Directory.systemTemp.path,
+          image: 'dart:test',
+          docker: (args, {stdin}) async {
+            calls.add(args.first);
+            return switch (args.first) {
+              'info' when !up => ProcessResult(0, 1, '', 'no daemon'),
+              'exec' => ProcessResult(0, code, output, ''),
+              _ => ProcessResult(0, 0, '', ''),
+            };
+          },
+        );
+
+    // The app with the sandbox on in its saved settings.
+    HarnessApp boxed(ModelProvider provider, Sandbox sandbox) {
+      const Settings(sandbox: true).save(settings);
+      return HarnessApp(
+        provider: provider,
+        model: 'fake',
+        settingsFile: settings,
+        startSandbox: () async => sandbox,
+      );
+    }
+
+    Message run(String command) => Message(Role.assistant, [
+      ToolCall('runCommand', {'command': command}),
+    ]);
+
+    test('is off by default, and the tools run on this computer', () async {
+      final provider = FakeProvider([say('hi')]);
+      var started = false;
+      await testNocterm('sandbox default', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: provider,
+            model: 'fake',
+            startSandbox: () async {
+              started = true;
+              return box();
+            },
+          ),
+        );
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+
+        expect(tester.terminalState, isNot(containsText('sandboxed')));
+        expect(tester.terminalState, isNot(containsText('the sandbox')));
+      });
+
+      expect(started, isFalse);
+      expect(provider.systems.single, systemPrompt);
+    });
+
+    test('the header says the tools are sandboxed', () async {
+      final sandbox = await box();
+      await testNocterm('sandboxed', size: const Size(140, 24), (tester) async {
+        await tester.pumpComponent(boxed(FakeProvider([]), sandbox));
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('▣ sandboxed'));
+      });
+    });
+
+    test("and when the sandbox didn't start", () async {
+      final sandbox = await box(up: false);
+      await testNocterm('sandbox failed', size: const Size(140, 24), (
+        tester,
+      ) async {
+        await tester.pumpComponent(boxed(FakeProvider([]), sandbox));
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('sandbox failed'));
+      });
+    });
+
+    test(
+      '/settings turns it on, saves it, and gives the agent its tools',
+      () async {
+        final provider = FakeProvider([say('hi'), say('in the box')]);
+        final sandbox = await box();
+        await testNocterm('sandbox on', size: const Size(100, 30), (
+          tester,
+        ) async {
+          await tester.pumpComponent(
+            HarnessApp(
+              provider: provider,
+              model: 'fake',
+              settingsFile: settings,
+              startSandbox: () async => sandbox,
+            ),
+          );
+          await tester.enterText('hello');
+          await tester.sendEnter();
+          await tester.pump();
+
+          await tester.enterText('/settings');
+          await tester.sendEnter();
+          await tester.pump();
+          expect(
+            tester.terminalState,
+            containsText('Run the tools in a Docker container: off'),
+          );
+          await tester.sendArrowDown(); // past Graphite light
+          await tester.sendArrowDown();
+          await tester.sendEnter();
+          await tester.pump();
+          await tester.pump();
+
+          expect(tester.terminalState, containsText('Starting the sandbox…'));
+          expect(tester.terminalState, containsText('The sandbox is running'));
+          expect(tester.terminalState, containsText('▣ sandboxed'));
+          expect(Settings.load(settings).sandbox, isTrue);
+
+          await tester.enterText('and now?');
+          await tester.sendEnter();
+          await tester.pump();
+        });
+
+        expect(provider.systems.last, '$systemPrompt\n\n$sandboxPrompt');
+        final told = provider.requests.last.last.parts
+            .whereType<TextPart>()
+            .map((p) => p.text);
+        expect(told.first, '[The user turned the sandbox on.]');
+      },
+    );
+
+    test('/settings turns it off and stops it', () async {
+      final sandbox = await box();
+      await testNocterm('sandbox off', size: const Size(140, 30), (
+        tester,
+      ) async {
+        await tester.pumpComponent(boxed(FakeProvider([]), sandbox));
+        await tester.pump();
+
+        await tester.enterText('/settings');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(
+          tester.terminalState,
+          containsText('Run the tools in a Docker container: on'),
+        );
+        await tester.sendArrowDown();
+        await tester.sendArrowDown();
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('The sandbox is off'));
+        expect(tester.terminalState, isNot(containsText('▣ sandboxed')));
+      });
+
+      expect(Settings.load(settings).sandbox, isFalse);
+      expect(calls.last, 'rm');
+      expect(sandbox.running, isFalse);
+    });
+
+    test('a prompt sent while it starts waits for it', () async {
+      final provider = FakeProvider([say('hi')]);
+      final starting = Completer<Sandbox>();
+      const Settings(sandbox: true).save(settings);
+      await testNocterm('sandbox starting', size: const Size(140, 24), (
+        tester,
+      ) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: provider,
+            model: 'fake',
+            settingsFile: settings,
+            startSandbox: () => starting.future,
+          ),
+        );
+        await tester.pump();
+        expect(tester.terminalState, containsText('starting the sandbox…'));
+
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(provider.systems.length, 0);
+
+        starting.complete(await box());
+        await Future<void>.delayed(Duration.zero);
+        await tester.pump();
+        await tester.pump();
+      });
+
+      expect(provider.systems.single, '$systemPrompt\n\n$sandboxPrompt');
+    });
+
+    test("a command's output shows under it", () async {
+      final sandbox = await box(output: '00:01 +3: All tests passed!\n');
+      await testNocterm('command output', (tester) async {
+        await tester.pumpComponent(
+          boxed(FakeProvider([run('dart test'), say('they pass')]), sandbox),
+        );
+        await tester.pump();
+
+        await tester.enterText('run the tests');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('┃ RunCommand(dart test)'));
+        expect(
+          tester.terminalState,
+          containsText('⎿ 00:01 +3: All tests passed!'),
+        );
+      });
+    });
+
+    test('long output shows its last lines', () async {
+      final lines = [for (var i = 1; i <= 20; i++) 'line $i'];
+      final sandbox = await box(output: lines.join('\n'), code: 1);
+      await testNocterm('long output', size: const Size(80, 40), (
+        tester,
+      ) async {
+        await tester.pumpComponent(
+          boxed(FakeProvider([run('dart test'), say('one fails')]), sandbox),
+        );
+        await tester.pump();
+
+        await tester.enterText('run the tests');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('⎿ … 12 lines above'));
+        expect(tester.terminalState, containsText('line 13'));
+        expect(tester.terminalState, containsText('line 20'));
+        expect(tester.terminalState, isNot(containsText('line 12')));
+      });
+    });
+
+    test('tells the model about the sandbox', () async {
+      final provider = FakeProvider([say('hi')]);
+      final sandbox = await box();
+
+      await testNocterm('sandbox prompt', (tester) async {
+        await tester.pumpComponent(boxed(provider, sandbox));
+        await tester.pump();
+
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+      });
+
+      expect(provider.systems.single, '$systemPrompt\n\n$sandboxPrompt');
+      expect(sandboxPrompt, contains('no network'));
+    });
   });
 
   group('Term', () {

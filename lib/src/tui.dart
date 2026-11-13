@@ -14,6 +14,7 @@ import 'messages.dart';
 import 'model_provider.dart';
 import 'phone.dart';
 import 'question.dart';
+import 'sandbox.dart';
 import 'session.dart';
 import 'settings.dart';
 import 'term.dart';
@@ -36,6 +37,9 @@ const _anytime = {'/new', '/settings', '/exit', '/phone'};
 /// The commands the phone can't send: they belong to the terminal.
 const _terminalOnly = {'/exit', '/settings', '/phone'};
 
+// How many of a tool's last output lines show under it.
+const _outputRows = 8;
+
 /// 3318 -> "3,318".
 String grouped(int n) =>
     n.toString().replaceAllMapped(RegExp(r'\B(?=(\d{3})+$)'), (_) => ',');
@@ -57,6 +61,14 @@ const systemPrompt =
     'and why. When you need the user to decide something, call askUser with '
     'the choices, the one you recommend first, instead of asking in a '
     'reply.';
+
+const sandboxPrompt =
+    'Your tools run in a sandbox: a container with no network, where the only '
+    'folders from this computer are the project folder and, read-only, '
+    "Dart's package cache. runCommand runs shell commands there, like dart "
+    "test. When something can't be done inside it, like reaching the "
+    "internet or a file outside the project, say so and don't look for a way "
+    'around it.';
 
 /// What the model is told after /undo, so it doesn't go on as if its edit
 /// were still there.
@@ -127,6 +139,8 @@ class _Drag {
   int x, y;
 }
 
+Future<Sandbox> _startSandbox() => Sandbox.start(Directory.current.path);
+
 class HarnessApp extends StatefulComponent {
   const HarnessApp({
     super.key,
@@ -135,7 +149,13 @@ class HarnessApp extends StatefulComponent {
     this.settingsFile,
     this.onQuestion,
     this.phonePort = 4545,
+    this.startSandbox = _startSandbox,
   });
+
+  /// Starts the sandbox the agents' tools run in, when /settings turns it
+  /// on or the saved settings have it on. With it off, the tools run on
+  /// this computer, and there are file tools only.
+  final Future<Sandbox> Function() startSandbox;
 
   final ModelProvider provider;
   final String model;
@@ -186,15 +206,97 @@ class _HarnessAppState extends State<HarnessApp> {
   PhoneMirror? _mirror;
   StreamSubscription<Map<String, dynamic>>? _phoneMessages;
 
+  // The sandbox, while the setting is on: running, or the one that didn't
+  // start, whose tools refuse. [_sandboxStart] is there while it starts.
+  Sandbox? _sandbox;
+  Future<void>? _sandboxStart;
+
   Agent _agent(
     FileHistory history, [
     Iterable<Message> conversation = const [],
   ]) => Agent(
     component.provider,
-    [...fileTools(history: history), askUserTool],
-    system: systemPrompt,
+    _tools(history),
+    system: _system(),
     conversation: conversation,
   );
+
+  // With the sandbox on, the tools run inside it, and runCommand comes with
+  // them. Until it has started, the file tools are there for the first
+  // request to name; _run waits for the sandbox before sending one.
+  List<Tool> _tools(FileHistory history) => [
+    if (_settings.sandbox && _sandbox != null)
+      ..._sandbox!.tools(history: history)
+    else
+      ...fileTools(history: history),
+    askUserTool,
+  ];
+
+  String _system() =>
+      _settings.sandbox ? '$systemPrompt\n\n$sandboxPrompt' : systemPrompt;
+
+  // Gives every agent the tools and prompt that go with the sandbox's
+  // setting, and tells the ones mid-chat what changed.
+  void _retool({String? note}) {
+    for (final session in _sessions) {
+      session.agent
+        ..tools = _tools(session.history)
+        ..system = _system();
+      if (note != null && session.agent.conversation.isNotEmpty) {
+        session.agent.note(note);
+      }
+    }
+  }
+
+  // Starts the sandbox, or stops it, and says how that went in [session].
+  Future<void> _setSandbox(bool on, {Session? session}) async {
+    void say(String text) {
+      if (session != null && mounted) {
+        setState(() => session.entries.add(NoteEntry(text)));
+      }
+    }
+
+    if (!on) {
+      final box = _sandbox;
+      setState(() {
+        _sandbox = null;
+        _retool(
+          note:
+              '[The user turned the sandbox off. Your tools run on this '
+              'computer now, and runCommand is gone.]',
+        );
+      });
+      say('The sandbox is off. The tools run on this computer again.');
+      await box?.stop();
+      return;
+    }
+
+    say('Starting the sandbox…');
+    // done once the agents have the sandbox's tools
+    final ready = Completer<void>();
+    setState(() => _sandboxStart = ready.future);
+    final box = await component.startSandbox();
+    if (!mounted || !_settings.sandbox) {
+      _sandboxStart = null;
+      ready.complete();
+      await box.stop();
+      return;
+    }
+    setState(() {
+      _sandbox = box;
+      _sandboxStart = null;
+      _retool(note: '[The user turned the sandbox on.]');
+    });
+    ready.complete();
+    say(switch (box.problem) {
+      null =>
+        'The sandbox is running: the tools work in a container with no '
+            'network that sees only this project folder.',
+      final problem =>
+        "The sandbox didn't start: $problem. The tools refuse until it "
+            'does, or until you turn it off in /settings.',
+    });
+  }
 
   Session _newSession([Iterable<Message> conversation = const []]) {
     final history = FileHistory();
@@ -215,12 +317,14 @@ class _HarnessAppState extends State<HarnessApp> {
     super.initState();
     _active = _newSession();
     _sessions.add(_active);
+    if (_settings.sandbox) unawaited(_setSandbox(true));
   }
 
   @override
   void dispose() {
     _phoneMessages?.cancel();
     _phone?.close();
+    unawaited(_sandbox?.stop());
     for (final session in _sessions) {
       session.dispose();
     }
@@ -376,6 +480,7 @@ class _HarnessAppState extends State<HarnessApp> {
 
     switch (text) {
       case '/exit':
+        await _sandbox?.stop();
         shutdownApp();
         return;
       case '/clear':
@@ -476,6 +581,9 @@ class _HarnessAppState extends State<HarnessApp> {
       session.busy = true;
       session.setMood(Mood.working);
     });
+    // the first request goes out once the sandbox is there to run its tools
+    if (_sandboxStart case final starting?) await starting;
+    if (!mounted) return;
 
     final events = prompt == '/compact'
         ? session.agent.compact()
@@ -667,14 +775,24 @@ class _HarnessAppState extends State<HarnessApp> {
     });
   }
 
+  // /settings lists the themes, then the sandbox's switch.
   bool _onSettingsKey(KeyboardEvent event) {
     final modes = AppThemeMode.values;
+    final rows = modes.length + 1;
 
     switch (event.logicalKey) {
       case LogicalKey.arrowUp:
-        setState(() => _choice = (_choice - 1) % modes.length);
+        setState(() => _choice = (_choice - 1) % rows);
       case LogicalKey.arrowDown:
-        setState(() => _choice = (_choice + 1) % modes.length);
+        setState(() => _choice = (_choice + 1) % rows);
+      case LogicalKey.enter when _choice == modes.length:
+        final on = !_settings.sandbox;
+        setState(() {
+          _settings = _settings.copyWith(sandbox: on);
+          _settingsOpen = false;
+        });
+        _settings.save(component.settingsFile);
+        unawaited(_setSandbox(on, session: _active));
       case LogicalKey.enter:
         setState(() {
           _settings = _settings.copyWith(theme: modes[_choice]);
@@ -1131,6 +1249,19 @@ class _HarnessAppState extends State<HarnessApp> {
                 ),
               ),
             const SizedBox(height: 1),
+            Text('Sandbox', style: TextStyle(color: colors.secondary)),
+            Text(
+              '${_choice == AppThemeMode.values.length ? '›' : ' '} Run the '
+              'tools in a Docker container: '
+              '${_settings.sandbox ? 'on' : 'off'}',
+              style: TextStyle(
+                color: colors.primary,
+                fontWeight: _choice == AppThemeMode.values.length
+                    ? FontWeight.bold
+                    : FontWeight.normal,
+              ),
+            ),
+            const SizedBox(height: 1),
             Text(
               '↑ ↓ choose · enter apply · esc close',
               style: TextStyle(color: colors.secondary),
@@ -1180,6 +1311,21 @@ class _HarnessAppState extends State<HarnessApp> {
                       '${component.model} · ${_cwd()}',
                       style: TextStyle(color: colors.secondary),
                     ),
+                    if (_settings.sandbox)
+                      switch (_sandbox) {
+                        null => Text(
+                          ' · starting the sandbox…',
+                          style: TextStyle(color: colors.secondary),
+                        ),
+                        final box when box.running => Text(
+                          ' · ▣ sandboxed',
+                          style: TextStyle(color: colors.tool),
+                        ),
+                        _ => Text(
+                          ' · sandbox failed',
+                          style: TextStyle(color: colors.error),
+                        ),
+                      },
                     if (_phone case final phone? when !phone.closed)
                       Text(
                         phone.connected
@@ -1284,6 +1430,10 @@ class _HarnessAppState extends State<HarnessApp> {
           ..._diff(diff, colors),
         ],
       ),
+      ToolFinished(:final output, :final failed) => _output(
+        output,
+        failed ? colors.error : colors.secondary,
+      ),
       CompactionStarted() => Text(
         '┃ Summarizing conversation…',
         style: TextStyle(color: colors.secondary),
@@ -1299,6 +1449,33 @@ class _HarnessAppState extends State<HarnessApp> {
         style: TextStyle(color: colors.error),
       ),
     };
+  }
+
+  // A tool's output under it: its last lines, which is where a command's
+  // result and errors are.
+  Component _output(String output, Color color) {
+    final lines = output.trimRight().split('\n');
+    final shown = lines.length > _outputRows
+        ? lines.sublist(lines.length - _outputRows)
+        : lines;
+    return Padding(
+      padding: const EdgeInsets.only(left: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (lines.length > _outputRows)
+            Text(
+              '⎿ … ${lines.length - _outputRows} lines above',
+              style: TextStyle(color: color),
+            ),
+          for (final (i, line) in shown.indexed)
+            Text(
+              '${i == 0 && lines.length <= _outputRows ? '⎿ ' : '  '}$line',
+              style: TextStyle(color: color),
+            ),
+        ],
+      ),
+    );
   }
 
   // The question, its choices while it waits (the recommended one first),

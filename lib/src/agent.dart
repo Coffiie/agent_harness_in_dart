@@ -38,8 +38,12 @@ class Agent {
   }
 
   final ModelProvider provider;
-  final List<Tool> tools;
-  final String? system;
+
+  /// What the model can call, and what it's told. Both can change between
+  /// turns, like when /settings turns the sandbox on; each request uses
+  /// what they are at that moment.
+  List<Tool> tools;
+  String? system;
   final _conversation = <Message>[];
 
   /// The chat so far.
@@ -111,7 +115,9 @@ class Agent {
             results.add(ToolResult(call.name, {'answer': answer}));
             continue;
           }
-          results.add(ToolResult(call.name, await tool.run(call.args)));
+          final result = await tool.run(call.args);
+          results.add(ToolResult(call.name, result));
+          if (_shown(result) case final shown?) yield shown;
         }
 
         _conversation.add(Message(Role.user, results));
@@ -119,6 +125,30 @@ class Agent {
     } catch (e) {
       yield AgentError(e.toString());
     }
+  }
+
+  // What the user sees of a tool's result: a command's output, or an error.
+  static ToolFinished? _shown(Map<String, dynamic> result) {
+    if (result['error'] case final String error) {
+      return ToolFinished(error, failed: true);
+    }
+    if (result case {'status': 'error', 'message': final String message}) {
+      return ToolFinished(message, failed: true);
+    }
+    if (result['output'] case final String output) {
+      final failed = result['exitCode'] != 0;
+      // a command that printed nothing shows nothing, unless it failed
+      if (output.trim().isEmpty) {
+        return failed
+            ? ToolFinished(switch (result['exitCode']) {
+                final int code => 'exit code $code',
+                final other => '$other',
+              }, failed: true)
+            : null;
+      }
+      return ToolFinished(output, failed: failed);
+    }
+    return null;
   }
 
   /// Asks the model, in one call that leaves this chat as it is, whether

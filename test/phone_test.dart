@@ -268,5 +268,24 @@ void main() {
         ],
       });
     });
+
+    test("sends a tool's output, and whether it failed", () async {
+      final phone = await Phone.connect(server);
+      await settle();
+
+      sessions.first.entries
+        ..add(EventEntry(const ToolStarted('RunCommand(dart test)')))
+        ..add(
+          EventEntry(const ToolFinished('Some tests failed.\n', failed: true)),
+        );
+      mirror.sync();
+      await settle();
+
+      expect(phone.ofType('entries').last['entries'].last, {
+        'kind': 'output',
+        'text': 'Some tests failed.',
+        'failed': true,
+      });
+    });
   });
 }
