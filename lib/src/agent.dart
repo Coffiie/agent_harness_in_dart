@@ -38,8 +38,12 @@ class Agent {
   }
 
   final ModelProvider provider;
-  final List<Tool> tools;
-  final String? system;
+
+  /// What the model can call, and what it's told. Both can change between
+  /// turns, like when /settings turns the sandbox on; each request uses
+  /// what they are at that moment.
+  List<Tool> tools;
+  String? system;
   final _conversation = <Message>[];
 
   /// The chat so far.

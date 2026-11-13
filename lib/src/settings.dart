@@ -32,10 +32,15 @@ const defaultPrices = {
 class Settings {
   const Settings({
     this.theme = AppThemeMode.graphiteDark,
+    this.sandbox = false,
     this.prices = defaultPrices,
   });
 
   final AppThemeMode theme;
+
+  /// Whether the agents' tools run in a Docker sandbox. Off by default, so
+  /// the harness works on a computer without Docker.
+  final bool sandbox;
 
   /// Dollars per million tokens, by model name. The header's spent counter
   /// uses these.
@@ -53,6 +58,7 @@ class Settings {
       final saved = json['prices'];
       return Settings(
         theme: theme ?? AppThemeMode.graphiteDark,
+        sandbox: json['sandbox'] == true,
         prices: {
           ...defaultPrices,
           if (saved is Map)
@@ -65,8 +71,11 @@ class Settings {
     }
   }
 
-  Settings copyWith({AppThemeMode? theme}) =>
-      Settings(theme: theme ?? this.theme, prices: prices);
+  Settings copyWith({AppThemeMode? theme, bool? sandbox}) => Settings(
+    theme: theme ?? this.theme,
+    sandbox: sandbox ?? this.sandbox,
+    prices: prices,
+  );
 
   /// Writes to [file]. With no file, the settings last until the app quits.
   /// The prices are written too, so they can be edited there.
@@ -76,6 +85,7 @@ class Settings {
     file.writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert({
         'theme': theme.name,
+        'sandbox': sandbox,
         'prices': {
           for (final MapEntry(:key, :value) in prices.entries)
             key: value.toJson(),
