@@ -271,6 +271,11 @@ class PhoneMirror {
           'label': label,
           'diff': _diff(diff),
         },
+        ToolFinished(:final output, :final failed) => {
+          'kind': 'output',
+          'text': output.trimRight(),
+          'failed': failed,
+        },
         CompactionStarted() => note('Summarizing conversation…'),
         Compacted(:final before, :final after) => note(
           'Compacted conversation from $before tokens to $after tokens',

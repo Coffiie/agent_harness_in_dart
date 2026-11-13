@@ -19,6 +19,15 @@ class ToolStarted extends AgentEvent {
   final List<DiffLine> diff;
 }
 
+/// What a tool said back, when the user should see it: a command's
+/// output, or why the tool failed.
+class ToolFinished extends AgentEvent {
+  const ToolFinished(this.output, {this.failed = false});
+
+  final String output;
+  final bool failed;
+}
+
 /// The model asked the user something, and the turn waits until
 /// [question] is answered.
 class Asked extends AgentEvent {

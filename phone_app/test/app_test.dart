@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:harness_phone/term.dart';
 import 'package:harness_phone/link.dart';
 import 'package:harness_phone/main.dart';
 
@@ -134,6 +135,27 @@ void main() {
       matching: find.byType(EditableText),
     );
     expect(tester.widget<EditableText>(box).focusNode.hasFocus, isFalse);
+  });
+
+  testWidgets("shows a command's output, its last lines", (tester) async {
+    await connect(tester);
+    tui.sessions([info(1, 'session 1')]);
+    tui.entries(1, 0, [
+      {'kind': 'tool', 'label': 'RunCommand(dart test)', 'diff': []},
+      {
+        'kind': 'output',
+        'text': [for (var i = 1; i <= 15; i++) 'line $i'].join('\n'),
+        'failed': true,
+      },
+    ]);
+    await tester.pump();
+    await open(tester, 1);
+
+    expect(find.text('┃ RunCommand(dart test)'), findsOneWidget);
+    final output = tester.widget<Text>(find.textContaining('lines above'));
+    expect(output.data, startsWith('… 3 lines above\nline 4\n'));
+    expect(output.data, endsWith('line 15'));
+    expect(output.style!.color, Graphite.error);
   });
 
   testWidgets('new entries add on, and /clear starts over', (tester) async {

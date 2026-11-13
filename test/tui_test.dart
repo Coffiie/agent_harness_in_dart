@@ -7,6 +7,7 @@ import 'package:coding_agent_in_dart/src/history.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/question.dart';
+import 'package:coding_agent_in_dart/src/sandbox.dart';
 import 'package:coding_agent_in_dart/src/settings.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:coding_agent_in_dart/src/tui.dart';
@@ -171,6 +172,122 @@ void main() {
 
     expect(provider.systems, [systemPrompt]);
     expect(systemPrompt, contains('Never write a diff'));
+  });
+
+  group('sandbox', () {
+    // A sandbox on a fake Docker, whose commands print [output].
+    Future<Sandbox> box({String output = '', int code = 0, bool up = true}) =>
+        Sandbox.start(
+          Directory.systemTemp.path,
+          image: 'dart:test',
+          docker: (args, {stdin}) async => switch (args.first) {
+            'info' when !up => ProcessResult(0, 1, '', 'no daemon'),
+            'exec' => ProcessResult(0, code, output, ''),
+            _ => ProcessResult(0, 0, '', ''),
+          },
+        );
+
+    Message run(String command) => Message(Role.assistant, [
+      ToolCall('runCommand', {'command': command}),
+    ]);
+
+    test('the header says the tools are sandboxed', () async {
+      final sandbox = await box();
+      await testNocterm('sandboxed', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([]),
+            model: 'fake',
+            sandbox: sandbox,
+          ),
+        );
+
+        expect(tester.terminalState, containsText('▣ sandboxed'));
+      });
+    });
+
+    test("and when the sandbox isn't running", () async {
+      final sandbox = await box(up: false);
+      await testNocterm('sandbox off', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([]),
+            model: 'fake',
+            sandbox: sandbox,
+          ),
+        );
+
+        expect(tester.terminalState, containsText('sandbox off'));
+      });
+    });
+
+    test("a command's output shows under it", () async {
+      final sandbox = await box(output: '00:01 +3: All tests passed!\n');
+      await testNocterm('command output', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([run('dart test'), say('they pass')]),
+            model: 'fake',
+            sandbox: sandbox,
+          ),
+        );
+
+        await tester.enterText('run the tests');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('┃ RunCommand(dart test)'));
+        expect(
+          tester.terminalState,
+          containsText('⎿ 00:01 +3: All tests passed!'),
+        );
+      });
+    });
+
+    test('long output shows its last lines', () async {
+      final lines = [for (var i = 1; i <= 20; i++) 'line $i'];
+      final sandbox = await box(output: lines.join('\n'), code: 1);
+      await testNocterm('long output', size: const Size(80, 40), (
+        tester,
+      ) async {
+        await tester.pumpComponent(
+          HarnessApp(
+            provider: FakeProvider([run('dart test'), say('one fails')]),
+            model: 'fake',
+            sandbox: sandbox,
+          ),
+        );
+
+        await tester.enterText('run the tests');
+        await tester.sendEnter();
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('⎿ … 12 lines above'));
+        expect(tester.terminalState, containsText('line 13'));
+        expect(tester.terminalState, containsText('line 20'));
+        expect(tester.terminalState, isNot(containsText('line 12')));
+      });
+    });
+
+    test('tells the model about the sandbox', () async {
+      final provider = FakeProvider([say('hi')]);
+      final sandbox = await box();
+
+      await testNocterm('sandbox prompt', (tester) async {
+        await tester.pumpComponent(
+          HarnessApp(provider: provider, model: 'fake', sandbox: sandbox),
+        );
+
+        await tester.enterText('hello');
+        await tester.sendEnter();
+        await tester.pump();
+      });
+
+      expect(provider.systems.single, '$systemPrompt\n\n$sandboxPrompt');
+      expect(sandboxPrompt, contains('no network'));
+    });
   });
 
   group('Term', () {
