@@ -87,6 +87,7 @@ class Agent {
             e.retryAfter ?? const Duration(seconds: 10),
             e.message,
             status: e.status,
+            provider: provider.name,
           );
           continue;
         }
@@ -143,9 +144,10 @@ class Agent {
     } on TryLater catch (e) {
       yield AgentError(
         e is RateLimited
-            ? "Gemini's rate limit, after trying $mostRetries times: "
-                  '${e.message}'
-            : 'Gemini was still busy after trying $mostRetries times: $e',
+            ? "${provider.name}'s rate limit, after trying $mostRetries "
+                  'times: ${e.message}'
+            : '${provider.name} was still busy after trying $mostRetries '
+                  'times: $e',
       );
     } catch (e) {
       yield AgentError(e.toString());

@@ -369,7 +369,14 @@ void main() {
       expect((answer.parts.single as TextPart).text, 'hi');
       expect(slept, [const Duration(seconds: 5)]);
       expect(
-        retryNote(const RetryWait(Duration(seconds: 5), '', status: 408)),
+        retryNote(
+          const RetryWait(
+            Duration(seconds: 5),
+            '',
+            status: 408,
+            provider: 'Gemini',
+          ),
+        ),
         "Gemini didn't answer: waiting 5s, then trying again",
       );
     });

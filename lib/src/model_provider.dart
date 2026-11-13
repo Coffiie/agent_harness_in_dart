@@ -2,6 +2,9 @@ import 'messages.dart';
 import 'tools.dart';
 
 abstract class ModelProvider {
+  /// What the user sees it called: "Gemini", "ChatGPT".
+  String get name;
+
   Future<Message> generate(
     List<Message> messages, {
     List<Tool> tools,
