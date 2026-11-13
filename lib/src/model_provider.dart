@@ -23,11 +23,17 @@ class ProviderError implements Exception {
   String toString() => '$status: $message';
 }
 
-/// The provider said to slow down, and asked to wait [retryAfter] when it
-/// said how long. Until then, every request to it waits, whichever session
-/// sends it.
-class RateLimited extends ProviderError {
-  const RateLimited(String message, {this.retryAfter}) : super(429, message);
+/// The provider can't take the request now: it's over its rate limit
+/// (429), or too busy (5xx). It waits [retryAfter] before the next
+/// request, whichever session sends it.
+class TryLater extends ProviderError {
+  const TryLater(super.status, super.message, {this.retryAfter});
 
   final Duration? retryAfter;
+}
+
+/// The provider said to slow down.
+class RateLimited extends TryLater {
+  const RateLimited(String message, {Duration? retryAfter})
+    : super(429, message, retryAfter: retryAfter);
 }

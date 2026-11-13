@@ -80,12 +80,13 @@ class Agent {
             tools: tools,
             system: system,
           );
-        } on RateLimited catch (e) {
+        } on TryLater catch (e) {
           // the provider holds the next request back for as long as it asked
           if (++limited > mostRetries) rethrow;
-          yield RateLimitWait(
+          yield RetryWait(
             e.retryAfter ?? const Duration(seconds: 10),
             e.message,
+            status: e.status,
           );
           continue;
         }
@@ -139,9 +140,12 @@ class Agent {
 
         _conversation.add(Message(Role.user, results));
       }
-    } on RateLimited catch (e) {
+    } on TryLater catch (e) {
       yield AgentError(
-        "Gemini's rate limit, after trying $mostRetries times: ${e.message}",
+        e is RateLimited
+            ? "Gemini's rate limit, after trying $mostRetries times: "
+                  '${e.message}'
+            : 'Gemini was still busy after trying $mostRetries times: $e',
       );
     } catch (e) {
       yield AgentError(e.toString());

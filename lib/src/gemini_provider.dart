@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
@@ -29,6 +30,9 @@ class GeminiProvider implements ModelProvider {
   final DateTime Function() _clock;
   final Future<void> Function(Duration) _sleep;
   DateTime? _pausedUntil;
+
+  // How many requests in a row Gemini was too busy for. Each wait doubles.
+  var _busy = 0;
 
   @override
   Future<Message> generate(
@@ -151,21 +155,31 @@ class GeminiProvider implements ModelProvider {
       body: jsonEncode(body),
     );
 
-    if (response.statusCode == 429) {
-      final wait = _retryDelay(response.body) ?? const Duration(seconds: 10);
+    final status = response.statusCode;
+    if (status == 429 || _busyStatuses.contains(status)) {
+      final wait =
+          _retryDelay(response.body) ??
+          (status == 429
+              ? const Duration(seconds: 10)
+              : Duration(seconds: min(5 << _busy++, 60)));
       final until = _clock().add(wait);
       if (_pausedUntil == null || until.isAfter(_pausedUntil!)) {
         _pausedUntil = until;
       }
-      throw RateLimited(_message(response.body), retryAfter: wait);
+      final message = _message(response.body);
+      throw status == 429
+          ? RateLimited(message, retryAfter: wait)
+          : TryLater(status, message, retryAfter: wait);
     }
-    if (response.statusCode != 200) {
-      throw ProviderError(response.statusCode, _message(response.body));
-    }
+    if (status != 200) throw ProviderError(status, _message(response.body));
+    _busy = 0;
 
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 }
+
+// Gemini is overloaded, or failed on its side: worth another try.
+const _busyStatuses = {500, 502, 503, 504};
 
 // The first line of the error's message, or the start of the body when it
 // isn't Gemini's JSON.

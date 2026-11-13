@@ -330,6 +330,61 @@ void main() {
       expect(slept, [const Duration(seconds: 30)]);
       expect(requests, hasLength(3));
     });
+
+    test('backs off from a busy Gemini, longer each time in a row', () async {
+      http.Response busy() => http.Response(
+        jsonEncode({
+          'error': {
+            'code': 503,
+            'message': 'This model is currently experiencing high demand.',
+            'status': 'UNAVAILABLE',
+          },
+        }),
+        503,
+      );
+      final waits = <Duration?>[];
+      Future<void> attempt() async {
+        try {
+          await gemini.generate([hello]);
+          waits.add(null);
+        } on TryLater catch (e) {
+          expect(e, isNot(isA<RateLimited>()));
+          expect(
+            '$e',
+            '503: This model is currently experiencing high demand.',
+          );
+          waits.add(e.retryAfter);
+        }
+      }
+
+      response = busy();
+      await attempt();
+      await attempt();
+      await attempt();
+      respond(
+        reply([
+          {'text': 'hi'},
+        ]),
+      );
+      await attempt();
+      response = busy();
+      await attempt();
+
+      expect(waits, [
+        const Duration(seconds: 5),
+        const Duration(seconds: 10),
+        const Duration(seconds: 20),
+        null,
+        // a reply starts it over
+        const Duration(seconds: 5),
+      ]);
+      // and each request waited out the one before
+      expect(slept, [
+        const Duration(seconds: 5),
+        const Duration(seconds: 10),
+        const Duration(seconds: 20),
+      ]);
+    });
   });
 
   test('throws when the reply has no content', () async {

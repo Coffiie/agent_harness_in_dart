@@ -376,10 +376,10 @@ void main() {
       calls = provider.calls;
 
       expect(events, [
-        isA<RateLimitWait>()
+        isA<RetryWait>()
             .having((e) => e.wait, 'wait', const Duration(seconds: 34))
             .having((e) => e.message, 'message', 'quota'),
-        isA<RateLimitWait>().having(
+        isA<RetryWait>().having(
           (e) => e.wait,
           'wait',
           const Duration(seconds: 10),
@@ -391,6 +391,25 @@ void main() {
       expect(provider.sizes, [1, 1, 1]);
     });
 
+    test('waits out a busy Gemini the same way', () async {
+      final provider = ScriptedFailures([
+        const TryLater(
+          503,
+          'This model is currently experiencing high demand.',
+          retryAfter: Duration(seconds: 5),
+        ),
+      ], then: say('hi'));
+
+      final events = await Agent(provider, [echo]).send('hello').toList();
+
+      final retry = events.first as RetryWait;
+      expect(
+        retryNote(retry),
+        'Gemini is busy (503): waiting 5s, then trying again',
+      );
+      expect(events.last, isA<AssistantText>());
+    });
+
     test('gives up after ${Agent.mostRetries} tries in a row', () async {
       final provider = ScriptedFailures([
         for (var i = 0; i <= Agent.mostRetries; i++) const RateLimited('quota'),
@@ -398,7 +417,7 @@ void main() {
 
       final events = await Agent(provider, [echo]).send('hello').toList();
 
-      expect(events.whereType<RateLimitWait>(), hasLength(Agent.mostRetries));
+      expect(events.whereType<RetryWait>(), hasLength(Agent.mostRetries));
       expect(
         (events.last as AgentError).message,
         "Gemini's rate limit, after trying ${Agent.mostRetries} times: quota",

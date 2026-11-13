@@ -58,11 +58,8 @@ void main(List<String> arguments) async {
           print(
             '${toolSeparator()} Compacted conversation from $before tokens to $after tokens',
           );
-        case RateLimitWait(:final wait):
-          print(
-            "${toolSeparator()} Gemini's rate limit: waiting "
-            '${wait.inSeconds}s, then trying again\n',
-          );
+        case RetryWait():
+          print('${toolSeparator()} ${retryNote(event)}\n');
         case AgentError(:final message):
           print('Error generating content: $message');
         case UsageReported():

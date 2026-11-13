@@ -646,15 +646,13 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
 
     final events = prompt == '/compact'
         ? session.agent.compact()
-        : session.agent.send(
-            switch (from) {
-              null => prompt,
-              _ when report =>
-                'The session "${from.name}" you started finished. Its last '
-                    'reply:\n\n$prompt',
-              _ => 'A message from the session "${from.name}":\n\n$prompt',
-            },
-          );
+        : session.agent.send(switch (from) {
+            null => prompt,
+            _ when report =>
+              'The session "${from.name}" you started finished. Its last '
+                  'reply:\n\n$prompt',
+            _ => 'A message from the session "${from.name}":\n\n$prompt',
+          });
 
     var failed = false;
     await for (final event in events) {
@@ -1536,8 +1534,8 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       ),
       UsageReported() => const SizedBox(),
       Asked(:final question) => _asked(session, question, colors),
-      RateLimitWait() => Text(
-        '┃ ${rateLimitNote(event)}',
+      RetryWait() => Text(
+        '┃ ${retryNote(event)}',
         style: TextStyle(color: colors.secondary),
       ),
       AgentError(:final message) => Text(
