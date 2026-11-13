@@ -68,11 +68,14 @@ class RetryWait extends AgentEvent {
 }
 
 /// What the TUI, the phone and the CLI say about a [RetryWait].
-String retryNote(RetryWait retry) => retry.status == 429
-    ? "Gemini's rate limit: waiting ${retry.wait.inSeconds}s, then trying "
-          'again'
-    : 'Gemini is busy (${retry.status}): waiting ${retry.wait.inSeconds}s, '
-          'then trying again';
+String retryNote(RetryWait retry) {
+  final then = 'waiting ${retry.wait.inSeconds}s, then trying again';
+  return switch (retry.status) {
+    429 => "Gemini's rate limit: $then",
+    408 => "Gemini didn't answer: $then",
+    final status => 'Gemini is busy ($status): $then',
+  };
+}
 
 class AgentError extends AgentEvent {
   const AgentError(this.message);

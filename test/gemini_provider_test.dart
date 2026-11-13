@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:coding_agent_in_dart/src/events.dart';
 import 'package:coding_agent_in_dart/src/gemini_provider.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
@@ -329,6 +331,47 @@ void main() {
 
       expect(slept, [const Duration(seconds: 30)]);
       expect(requests, hasLength(3));
+    });
+
+    test('gives up on a request with no answer, and tries again', () async {
+      gemini = GeminiProvider(
+        'key',
+        clock: () => now,
+        sleep: (wait) async {
+          slept.add(wait);
+          now = now.add(wait);
+        },
+        timeout: const Duration(milliseconds: 20),
+        client: MockClient((request) {
+          requests.add(request);
+          // Gemini holds the first one open
+          return requests.length == 1
+              ? Completer<http.Response>().future
+              : Future.value(response);
+        }),
+      );
+      respond(
+        reply([
+          {'text': 'hi'},
+        ]),
+      );
+
+      await expectLater(
+        gemini.generate([hello]),
+        throwsA(
+          isA<TryLater>()
+              .having((e) => e.status, 'status', 408)
+              .having((e) => e.retryAfter, 'retryAfter', Duration(seconds: 5)),
+        ),
+      );
+      final answer = await gemini.generate([hello]);
+
+      expect((answer.parts.single as TextPart).text, 'hi');
+      expect(slept, [const Duration(seconds: 5)]);
+      expect(
+        retryNote(const RetryWait(Duration(seconds: 5), '', status: 408)),
+        "Gemini didn't answer: waiting 5s, then trying again",
+      );
     });
 
     test('backs off from a busy Gemini, longer each time in a row', () async {

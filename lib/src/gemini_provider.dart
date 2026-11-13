@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -17,6 +18,7 @@ class GeminiProvider implements ModelProvider {
     http.Client? client,
     DateTime Function()? clock,
     Future<void> Function(Duration)? sleep,
+    this.timeout = const Duration(seconds: 90),
   }) : _client = client ?? http.Client(),
        _clock = clock ?? DateTime.now,
        _sleep = sleep ?? Future<void>.delayed;
@@ -24,6 +26,10 @@ class GeminiProvider implements ModelProvider {
   final String _apiKey;
   final http.Client _client;
   final String model;
+
+  /// How long a request may take. After that it counts as lost, and the
+  /// agent tries again, the way it does when Gemini is busy.
+  final Duration timeout;
 
   // Every session shares this provider, so when Gemini says to slow down,
   // they all wait until [_pausedUntil] before the next request.
@@ -149,23 +155,35 @@ class GeminiProvider implements ModelProvider {
       await _sleep(left);
     }
 
-    final response = await _client.post(
-      Uri.parse('$_baseUrl/$model:$method'),
-      headers: {'Content-Type': 'application/json', 'x-goog-api-key': _apiKey},
-      body: jsonEncode(body),
-    );
+    final http.Response response;
+    try {
+      response = await _client
+          .post(
+            Uri.parse('$_baseUrl/$model:$method'),
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': _apiKey,
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(timeout);
+    } on TimeoutException {
+      final wait = _pause(Duration(seconds: min(5 << _busy++, 60)));
+      throw TryLater(
+        408,
+        "no answer after ${timeout.inSeconds}s",
+        retryAfter: wait,
+      );
+    }
 
     final status = response.statusCode;
     if (status == 429 || _busyStatuses.contains(status)) {
-      final wait =
-          _retryDelay(response.body) ??
-          (status == 429
-              ? const Duration(seconds: 10)
-              : Duration(seconds: min(5 << _busy++, 60)));
-      final until = _clock().add(wait);
-      if (_pausedUntil == null || until.isAfter(_pausedUntil!)) {
-        _pausedUntil = until;
-      }
+      final wait = _pause(
+        _retryDelay(response.body) ??
+            (status == 429
+                ? const Duration(seconds: 10)
+                : Duration(seconds: min(5 << _busy++, 60))),
+      );
       final message = _message(response.body);
       throw status == 429
           ? RateLimited(message, retryAfter: wait)
@@ -175,6 +193,15 @@ class GeminiProvider implements ModelProvider {
     _busy = 0;
 
     return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  // Holds every request back for [wait], unless they're held longer already.
+  Duration _pause(Duration wait) {
+    final until = _clock().add(wait);
+    if (_pausedUntil == null || until.isAfter(_pausedUntil!)) {
+      _pausedUntil = until;
+    }
+    return wait;
   }
 }
 

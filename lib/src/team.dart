@@ -26,8 +26,9 @@ const teamPrompt =
     'task. When a session you started finishes, its last reply comes to '
     "you as a message, unless you're waiting on it with waitFor. When "
     'another session started you, your last reply goes back to it on its '
-    "own when you finish, so don't send it your result with sendMessage; "
-    'use sendMessage to ask it something. A message from another session '
+    'own when you finish, so end your turn with your result, or with your '
+    "question for it; you can't sendMessage it. A message from another "
+    'session '
     'starts with who sent it; answer it with sendMessage when it asks you '
     'something.';
 
@@ -111,6 +112,16 @@ List<Tool> teamTools(Team team, Session Function() self) {
         final to = find(args['to']);
         if (to == null) return missing(args['to'], me);
         if (identical(to, me)) return {'error': "That's this session."};
+        // its last reply goes to its starter on its own; a message on top
+        // would make the starter take another turn for the same news
+        if (identical(me.startedBy, to)) {
+          return {
+            'error':
+                '${to.name} started you, so your last reply goes to it on '
+                'its own when you finish. End your turn with your result, or '
+                'with your question for it.',
+          };
+        }
         final busy = to.busy;
         team.deliver(to, '${args['text']}', me);
         return {

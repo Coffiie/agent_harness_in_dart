@@ -99,6 +99,23 @@ void main() {
       expect(team.delivered.single, (tests, 'run them again', lead));
     });
 
+    test("won't send its starter what its last reply sends", () async {
+      tests.startedBy = lead;
+
+      final result = await tool(
+        'sendMessage',
+        tests,
+      ).run({'to': 'lead', 'text': 'I wrote the tests'});
+
+      expect(
+        result['error'],
+        'lead started you, so your last reply goes to it on its own when you '
+        'finish. End your turn with your result, or with your question for '
+        'it.',
+      );
+      expect(team.delivered, isEmpty);
+    });
+
     test('says when it waits for a busy session', () async {
       tests.busy = true;
 
