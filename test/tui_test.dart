@@ -49,6 +49,8 @@ class ScriptedProvider implements ModelProvider {
   final Map<String, Future<void>> gates;
   final firsts = <String, String>{};
   final prompts = <String, List<String>>{};
+  final tools = <String, List<String>>{};
+  final systems = <String, String?>{};
 
   @override
   Future<Message> generate(
@@ -63,6 +65,8 @@ class ScriptedProvider implements ModelProvider {
     final body = first.split('\n\n').last;
     final key = replies.keys.firstWhere(body.contains);
     firsts[key] = first;
+    this.tools[key] = [for (final t in tools) t.name];
+    systems[key] = system;
     if (messages.last.role == Role.user && text(messages.last).isNotEmpty) {
       (prompts[key] ??= []).add(text(messages.last));
     }
@@ -1457,11 +1461,11 @@ void main() {
     });
   });
 
-  group('sessions working together', () {
-    const wide = Size(120, 32);
+  group('orchestrators', () {
+    const wide = Size(120, 34);
 
     Future<void> settle(NoctermTester tester) async {
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < 8; i++) {
         await Future<void>.delayed(Duration.zero);
         await tester.pump();
       }
@@ -1470,6 +1474,15 @@ void main() {
     Message calls(String name, Map<String, dynamic> args) =>
         Message(Role.assistant, [ToolCall(name, args)]);
 
+    Message todos(List<String> titles) => calls('setTodos', {
+      'todos': [
+        for (final t in titles) {'title': t},
+      ],
+    });
+
+    Message start(String name, int todo, String task) =>
+        calls('startSession', {'name': name, 'todo': todo, 'task': task});
+
     Future<void> next(NoctermTester tester) => tester.sendKeyEvent(
       KeyboardEvent(
         logicalKey: LogicalKey.tab,
@@ -1477,92 +1490,184 @@ void main() {
       ),
     );
 
-    test(
-      'an agent starts a session, waits for it and gets its reply',
-      () async {
-        final provider = ScriptedProvider({
-          'split it': [
-            calls('startSession', {'name': 'tests', 'task': 'write the tests'}),
-            calls('waitFor', {
-              'sessions': ['tests'],
-            }),
-            say('the tests are written'),
-          ],
-          'write the tests': [say('6 tests pass')],
-        });
+    // /orchestrate the goal, and take the recommended three workers
+    Future<void> orchestrate(NoctermTester tester, String goal) async {
+      await tester.enterText('/orchestrate $goal');
+      await tester.sendEnter();
+      await tester.pump();
+      await tester.sendEnter();
+      await settle(tester);
+    }
 
-        await testNocterm('team start', size: wide, (tester) async {
-          await tester.pumpComponent(
-            HarnessApp(provider: provider, model: 'f'),
-          );
-          await tester.enterText('split it');
-          await tester.sendEnter();
-          await settle(tester);
+    test('/orchestrate asks how many workers, then plans the goal', () async {
+      final provider = ScriptedProvider({
+        'tidy the docs': [
+          todos(['fix typos']),
+          say('planned'),
+        ],
+      });
 
-          final screen = tester.terminalState;
-          expect(screen, containsText('┃ StartSession(tests)'));
-          expect(screen, containsText('⎿ write the tests'));
-          expect(screen, containsText('┃ WaitFor(tests)'));
-          expect(screen, containsText('⎿ tests: 6 tests pass'));
-          expect(screen, containsText('the tests are written'));
-          // in the sidebar, under the session that started it
-          expect(screen, containsText('└ '));
+      await testNocterm('orchestrate', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await tester.enterText('/orchestrate tidy the docs');
+        await tester.sendEnter();
+        await tester.pump();
 
-          await next(tester);
-          await tester.pump();
-          expect(tester.terminalState, containsText('> write the tests'));
-          expect(tester.terminalState, containsText('from split'));
-          expect(tester.terminalState, containsText('6 tests pass'));
-        });
+        expect(
+          tester.terminalState,
+          containsText('How many workers should work at once?'),
+        );
+        expect(tester.terminalState, containsText('1. 3 (recommended)'));
 
-        final child = provider.firsts['write the tests']!;
-        expect(child, 'A message from the session "split":\n\nwrite the tests');
-        // it waited, so the reply came from waitFor and nothing else
-        expect(provider.prompts['split it'], ['split it']);
-      },
-    );
+        await tester.sendArrowDown(); // 2
+        await tester.sendArrowDown(); // 5
+        await tester.sendEnter();
+        await settle(tester);
 
-    test(
-      "a started session's last reply goes back to its starter on its own",
-      () async {
-        final provider = ScriptedProvider({
+        final screen = tester.terminalState;
+        expect(screen, containsText('coding_agent_in_dart · orchestrator'));
+        expect(screen, containsText('▛▀▄▄▀▜'));
+        expect(screen, containsText('5 at once'));
+        expect(screen, containsText('┃ SetTodos(1)'));
+        expect(screen, containsText(' Todos · 0 of 1 done'));
+        expect(screen, containsText('○ 1 fix typos'));
+        expect(screen, containsText('ready'));
+        expect(screen, containsText('planned'));
+      });
+
+      // it plans and checks, and leaves the edits to its workers
+      expect(
+        provider.tools['tidy the docs'],
+        containsAll(['setTodos', 'startSession', 'updateTodo']),
+      );
+      expect(provider.tools['tidy the docs'], isNot(contains('updateFile')));
+      expect(provider.systems['tidy the docs'], contains('up to 5 at once'));
+    });
+
+    test('a plain agent has no startSession', () async {
+      final provider = ScriptedProvider({
+        'hi': [say('hello')],
+      });
+
+      await testNocterm('plain agent', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await tester.enterText('hi');
+        await tester.sendEnter();
+        await settle(tester);
+      });
+
+      expect(provider.tools['hi'], containsAll(['updateFile', 'sendMessage']));
+      expect(provider.tools['hi'], isNot(contains('startSession')));
+    });
+
+    test('it hands a todo to a worker, waits, checks and ticks it', () async {
+      final provider = ScriptedProvider({
+        'split it': [
+          todos(['write the tests']),
+          start('tests', 1, 'write the tests'),
+          calls('waitFor', {
+            'sessions': ['tests'],
+          }),
+          calls('updateTodo', {'todo': 1, 'status': 'done'}),
+          say('the tests are written'),
+        ],
+        'write the tests': [say('6 tests pass')],
+      });
+
+      await testNocterm('orchestrator wait', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await orchestrate(tester, 'split it');
+
+        final screen = tester.terminalState;
+        expect(screen, containsText('┃ StartSession(tests, todo 1)'));
+        expect(screen, containsText('⎿ write the tests'));
+        expect(screen, containsText('⎿ tests: 6 tests pass'));
+        expect(screen, containsText('┃ UpdateTodo(1: done)'));
+        expect(screen, containsText(' Todos · 1 of 1 done'));
+        expect(screen, containsText('✓ 1 write the tests'));
+        expect(screen, containsText('the tests are written'));
+        // in the sidebar, under its orchestrator, which shows progress
+        expect(screen, containsText('└ '));
+        expect(screen, containsText('done · 1/1'));
+
+        await next(tester);
+        await tester.pump();
+        expect(tester.terminalState, containsText('> write the tests'));
+        expect(tester.terminalState, containsText('from split'));
+        expect(tester.terminalState, containsText('6 tests pass'));
+        // the hint fits beside the sidebar: /clear makes room
+        expect(
+          tester.terminalState,
+          containsText(
+            'Ask anything · /new /orchestrate /fork /undo /phone /compact '
+            '/settings /exit ',
+          ),
+        );
+      });
+
+      expect(
+        provider.firsts['write the tests'],
+        'A message from the session "split":\n\nwrite the tests',
+      );
+      // it waited, so the reply came from waitFor and nothing else
+      expect(provider.prompts['split it'], ['split it']);
+    });
+
+    test("a worker's last reply comes back on its own", () async {
+      final gate = Completer<void>();
+      final provider = ScriptedProvider(
+        {
           'hand it off': [
-            calls('startSession', {'name': 'docs', 'task': 'write a README'}),
+            todos(['write a README']),
+            start('docs', 1, 'write a README'),
             say('docs is on it'),
+            calls('updateTodo', {'todo': 1, 'status': 'done'}),
             say('README checked'),
           ],
           'write a README': [say('Wrote README.md')],
-        });
+        },
+        gates: {'write a README': gate.future},
+      );
 
-        await testNocterm('team report', size: wide, (tester) async {
-          await tester.pumpComponent(
-            HarnessApp(provider: provider, model: 'f'),
-          );
-          await tester.enterText('hand it off');
-          await tester.sendEnter();
-          await settle(tester);
+      await testNocterm('orchestrator report', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await orchestrate(tester, 'hand it off');
 
-          final screen = tester.terminalState;
-          expect(screen, containsText('docs is on it'));
-          expect(screen, containsText('> Wrote README.md'));
-          expect(screen, containsText('from docs'));
-          expect(screen, containsText('README checked'));
-        });
+        // its turn is over, and it waits on its worker
+        var screen = tester.terminalState;
+        expect(screen, containsText('docs is on it'));
+        expect(screen, containsText('waiting · 0/1'));
+        expect(
+          screen,
+          containsText('1 worker is working · type to add a goal'),
+        );
+        expect(screen, containsText('● 1 write a README'));
 
-        expect(provider.prompts['hand it off'], [
-          'hand it off',
-          'The session "docs" you started finished. Its last reply:\n\n'
-              'Wrote README.md',
-        ]);
-      },
-    );
+        gate.complete();
+        await settle(tester);
 
-    test('a message to a busy session runs once its turn ends', () async {
+        screen = tester.terminalState;
+        expect(screen, containsText('> Wrote README.md'));
+        expect(screen, containsText('from docs'));
+        expect(screen, containsText('README checked'));
+        expect(screen, containsText('✓ 1 write a README'));
+        expect(screen, containsText('done · 1/1'));
+      });
+
+      expect(provider.prompts['hand it off'], [
+        'hand it off',
+        'The session "docs" you started finished. Its last reply:\n\n'
+            'Wrote README.md',
+      ]);
+    });
+
+    test('a message to a busy worker runs once its turn ends', () async {
       final gate = Completer<void>();
       final provider = ScriptedProvider(
         {
           'lead': [
-            calls('startSession', {'name': 'worker', 'task': 'slow task'}),
+            todos(['slow task']),
+            start('worker', 1, 'slow task'),
             calls('sendMessage', {'to': 'worker', 'text': 'also do x'}),
             say('sent'),
             say('noted the task'),
@@ -1573,11 +1678,9 @@ void main() {
         gates: {'slow task': gate.future},
       );
 
-      await testNocterm('team queue', size: wide, (tester) async {
+      await testNocterm('orchestrator queue', size: wide, (tester) async {
         await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
-        await tester.enterText('lead');
-        await tester.sendEnter();
-        await settle(tester);
+        await orchestrate(tester, 'lead');
 
         expect(tester.terminalState, containsText('⎿ also do x'));
         expect(tester.terminalState, containsText('sent'));
@@ -1599,12 +1702,13 @@ void main() {
       ]);
     });
 
-    test('the sidebar says when a session waits on another', () async {
+    test('the sidebar says when it waits on a worker', () async {
       final gate = Completer<void>();
       final provider = ScriptedProvider(
         {
           'boss': [
-            calls('startSession', {'name': 'helper', 'task': 'help out'}),
+            todos(['help out']),
+            start('helper', 1, 'help out'),
             calls('waitFor', {
               'sessions': ['helper'],
             }),
@@ -1615,19 +1719,176 @@ void main() {
         gates: {'help out': gate.future},
       );
 
-      await testNocterm('team waiting', size: wide, (tester) async {
+      await testNocterm('orchestrator waiting', size: wide, (tester) async {
         await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
-        await tester.enterText('boss');
-        await tester.sendEnter();
-        await settle(tester);
+        await orchestrate(tester, 'boss');
 
-        expect(tester.terminalState, containsText('boss · waiting'));
+        expect(tester.terminalState, containsText('boss · waiting · 0/1'));
         expect(tester.terminalState, containsText('helper · working'));
 
         gate.complete();
         await settle(tester);
-        expect(tester.terminalState, containsText('boss · done'));
         expect(tester.terminalState, containsText('⎿ helper: helped'));
+        expect(tester.terminalState, containsText('◐ 1 help out'));
+        expect(tester.terminalState, containsText('helper  checking'));
+      });
+    });
+
+    test(
+      "a worker's question shows in the orchestrator, and is answered there",
+      () async {
+        final provider = ScriptedProvider({
+          'ship it': [
+            todos(['write a README']),
+            start('readme', 1, 'write a README'),
+            say('readme is on it'),
+            say('noted'),
+          ],
+          'write a README': [
+            calls('askUser', {
+              'question': 'Which license should it name?',
+              'options': ['MIT', 'Apache 2.0'],
+            }),
+            say('named MIT'),
+          ],
+        });
+
+        await testNocterm('orchestrator relay', size: wide, (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(provider: provider, model: 'f'),
+          );
+          await orchestrate(tester, 'ship it');
+
+          var screen = tester.terminalState;
+          expect(
+            screen,
+            containsText('readme asks: Which license should it name?'),
+          );
+          expect(screen, containsText('1. MIT (recommended)'));
+          expect(screen, containsText('readme  asks you'));
+          expect(screen, containsText('ship · needs you · 0/1'));
+
+          await tester.sendEnter(); // MIT, from the orchestrator's pane
+          await settle(tester);
+
+          screen = tester.terminalState;
+          expect(screen, containsText('✓ MIT'));
+          expect(screen, containsText('> named MIT'));
+        });
+        final asked = provider.prompts['write a README'];
+        expect(asked, isNotNull);
+      },
+    );
+
+    test('a goal typed while it works waits for its turn', () async {
+      final gate = Completer<void>();
+      final provider = ScriptedProvider(
+        {
+          'first goal': [
+            todos(['one']),
+            say('planned one'),
+            todos(['two']),
+            say('planned two'),
+          ],
+        },
+        gates: {'first goal': gate.future},
+      );
+
+      await testNocterm('orchestrator goals', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await orchestrate(tester, 'first goal');
+
+        await tester.enterText('and a second goal');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(tester.terminalState, containsText('> and a second goal'));
+
+        gate.complete();
+        await settle(tester);
+
+        final screen = tester.terminalState;
+        expect(screen, containsText('planned two'));
+        expect(screen, containsText('○ 2 two'));
+      });
+
+      expect(provider.prompts['first goal'], [
+        'first goal',
+        'and a second goal',
+      ]);
+    });
+
+    test('clicking a todo opens its worker', () async {
+      final provider = ScriptedProvider({
+        'go': [
+          todos(['write it']),
+          start('writer', 1, 'write it'),
+          say('started'),
+        ],
+        'write it': [say('written')],
+      });
+
+      await testNocterm('orchestrator click', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await orchestrate(tester, 'go');
+        await tester.enterText('/todos');
+        await tester.sendEnter();
+        await tester.pump();
+
+        final row = tester.terminalState.findText('1 write it').first;
+        await tester.sendMouseEvent(
+          MouseEvent(
+            button: MouseButton.left,
+            x: row.x,
+            y: row.y,
+            pressed: true,
+          ),
+        );
+        await tester.sendMouseEvent(
+          MouseEvent(
+            button: MouseButton.left,
+            x: row.x,
+            y: row.y,
+            pressed: false,
+          ),
+        );
+        await tester.pump();
+
+        expect(tester.terminalState, containsText('> write it'));
+        expect(tester.terminalState, containsText('▸ └ ^^ writer'));
+      });
+    });
+
+    test('/todos lists the plan and /stop hands nothing more out', () async {
+      final provider = ScriptedProvider({
+        'two things': [
+          todos(['first', 'second']),
+          say('planned'),
+          say('stopped it'),
+        ],
+      });
+
+      await testNocterm('orchestrator stop', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await orchestrate(tester, 'two things');
+
+        await tester.enterText('/todos');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(tester.terminalState, containsText('┃ Todos · 0 of 2 done'));
+        expect(
+          tester.terminalState,
+          containsText('○ 2 second · no worker · ready'),
+        );
+
+        await tester.enterText('/stop');
+        await tester.sendEnter();
+        await tester.pump();
+        expect(
+          tester.terminalState,
+          containsText('Stopped: no new todos start.'),
+        );
+        expect(tester.terminalState, containsText('× 1 first'));
+        expect(tester.terminalState, containsText('× 2 second'));
       });
     });
   });

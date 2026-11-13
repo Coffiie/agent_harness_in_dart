@@ -5,6 +5,7 @@ import 'package:nocterm/nocterm.dart';
 import 'agent.dart';
 import 'events.dart';
 import 'history.dart';
+import 'plan.dart';
 import 'question.dart';
 import 'term.dart';
 
@@ -82,14 +83,15 @@ String sessionName(String prompt) {
   return first.length > 16 ? '${first.substring(0, 15)}…' : first;
 }
 
-/// A message for a session from another one's agent. A [report] is the
-/// last reply of a session [from] started on its own, going back to
-/// whoever started it.
+/// A message for a busy session, to run once its turn ends: from another
+/// session's agent, or with no [from], a goal the user typed to an
+/// orchestrator while it worked. A [report] is the last reply of a session
+/// [from] started on its own, going back to whoever started it.
 class Mail {
   const Mail(this.text, this.from, {this.report = false});
 
   final String text;
-  final Session from;
+  final Session? from;
   final bool report;
 }
 
@@ -147,6 +149,9 @@ class Session {
 
   // ---- working with other sessions ----
 
+  /// The todo list, when this session is an orchestrator.
+  Plan? plan;
+
   /// The session whose agent started this one, if one did.
   Session? startedBy;
 
@@ -196,7 +201,9 @@ class Session {
   /// What the sidebar says about it.
   String get status => switch (mood) {
     Mood.waiting => 'idle',
-    Mood.working when waitingOn.isNotEmpty => 'waiting',
+    Mood.working
+        when waitingOn.isNotEmpty || !busy && (plan?.running ?? false) =>
+      'waiting',
     Mood.working => 'working',
     Mood.done => 'done',
     Mood.error => 'error',

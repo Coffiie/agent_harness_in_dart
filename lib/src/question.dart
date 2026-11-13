@@ -19,6 +19,10 @@ class Question {
 
   bool get answered => _answer.isCompleted;
 
+  /// The session that asked, set when the question also shows in another
+  /// session, like a worker's in its orchestrator.
+  String? asker;
+
   /// The answer, once there is one.
   String? get chosen => _chosen;
   String? _chosen;

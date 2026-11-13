@@ -4,6 +4,35 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+/// One of an orchestrator's todos.
+class TodoInfo {
+  const TodoInfo({
+    required this.id,
+    required this.title,
+    required this.status,
+    this.worker,
+    this.workerId,
+  });
+
+  factory TodoInfo.fromJson(Map<String, dynamic> json) => TodoInfo(
+    id: json['id'] as int,
+    title: json['title'] as String,
+    status: json['status'] as String,
+    worker: json['worker'] as String?,
+    workerId: json['workerId'] as int?,
+  );
+
+  final int id;
+  final String title;
+
+  /// ready, waits on 1, working, asks you, checking, done or failed.
+  final String status;
+
+  /// The session doing it, once there is one.
+  final String? worker;
+  final int? workerId;
+}
+
 /// One session on the computer, as the sidebar shows it.
 class SessionInfo {
   const SessionInfo({
@@ -13,6 +42,9 @@ class SessionInfo {
     required this.mood,
     required this.busy,
     this.spent,
+    this.orchestrator = false,
+    this.progress,
+    this.todos = const [],
   });
 
   factory SessionInfo.fromJson(Map<String, dynamic> json) => SessionInfo(
@@ -22,7 +54,21 @@ class SessionInfo {
     mood: json['mood'] as String,
     busy: json['busy'] as bool,
     spent: json['spent'] as String?,
+    orchestrator: json['orchestrator'] == true,
+    progress: json['progress'] as String?,
+    todos: [
+      for (final todo in json['todos'] as List? ?? const [])
+        TodoInfo.fromJson(todo as Map<String, dynamic>),
+    ],
   );
+
+  /// Whether it's an orchestrator, which takes another goal even while it
+  /// works.
+  final bool orchestrator;
+
+  /// "2/4": its todos done, of all of them.
+  final String? progress;
+  final List<TodoInfo> todos;
 
   final int id;
   final String name;

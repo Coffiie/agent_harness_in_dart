@@ -1,3 +1,4 @@
+import 'plan.dart';
 import 'session.dart';
 import 'tools.dart';
 
@@ -16,28 +17,23 @@ abstract interface class Team {
 }
 
 const teamPrompt =
-    'You can work with other agents, each in a session of its own with the '
-    'same tools and the same project folder. startSession starts one on a '
-    'task, sendMessage writes to a session, waitFor waits until sessions are '
-    'done and gives you their last replies, and listSessions lists them. '
-    'When a task splits into parts that can be done at the same time, start '
-    'a session for each part, wait for them, then check their work. A new '
-    "session doesn't see your chat, so give it everything it needs in the "
-    'task. When a session you started finishes, its last reply comes to '
-    "you as a message, unless you're waiting on it with waitFor. When "
-    'another session started you, your last reply goes back to it on its '
-    'own when you finish, so end your turn with your result, or with your '
-    "question for it; you can't sendMessage it. A message from another "
-    'session '
-    'starts with who sent it; answer it with sendMessage when it asks you '
-    'something.';
+    'You can work with the agents in the other sessions, which share this '
+    'project folder. sendMessage writes to a session, waitFor waits until '
+    'sessions are done and gives you their last replies, and listSessions '
+    'lists them. When another session started you, your last reply goes '
+    'back to it on its own when you finish, so end your turn with your '
+    "result, or with your question for it; you can't sendMessage it. A "
+    'message from another session starts with who sent it; answer it with '
+    'sendMessage when it asks you something.';
 
 /// How many sessions there can be, so agents can't start them forever.
-const mostSessions = 8;
+const mostSessions = 12;
 
 /// The tools an agent uses to work with other sessions. [self] is the
-/// session the agent is in.
+/// session the agent is in. Only an orchestrator, a session with a plan,
+/// gets startSession, and each session it starts works on one of its todos.
 List<Tool> teamTools(Team team, Session Function() self) {
+  final plan = self().plan;
   Session? find(Object? name) => team.sessions
       .where((s) => s.name.toLowerCase() == '$name'.trim().toLowerCase())
       .firstOrNull;
@@ -52,47 +48,98 @@ List<Tool> teamTools(Team team, Session Function() self) {
   };
 
   return [
-    Tool(
-      name: 'startSession',
-      description:
-          'Start another agent in a new session of its own, and give it a '
-          'task. It works at the same time as you, with the same tools and '
-          'project folder. It returns right away; call waitFor to get the '
-          'result.',
-      parameters: {
-        'type': 'object',
-        'properties': {
-          'name': {
-            'type': 'string',
-            'description': 'a short name for the session, like tests or docs',
+    if (plan != null)
+      Tool(
+        name: 'startSession',
+        description:
+            'Give a todo to a worker: start an agent in a new session of its '
+            'own with a task, or give it to one of your workers that is done, '
+            'by its name. The worker has the same tools and project folder, '
+            'and works at the same time as you. This returns right away, and '
+            "the worker's last reply comes to you as a message when it "
+            'finishes.',
+        parameters: {
+          'type': 'object',
+          'properties': {
+            'name': {
+              'type': 'string',
+              'description': 'a short name for the worker, like tests or docs',
+            },
+            'todo': {'type': 'integer', 'description': 'the todo it works on'},
+            'task': {
+              'type': 'string',
+              'description':
+                  "everything the worker needs to know, since it doesn't "
+                  'see this chat',
+            },
           },
-          'task': {
-            'type': 'string',
-            'description':
-                "everything the new agent needs to know, since it doesn't "
-                'see this chat',
-          },
+          'required': ['name', 'todo', 'task'],
         },
-        'required': ['name', 'task'],
-      },
-      label: (args) => 'StartSession(${args['name']})',
-      run: (args) async {
-        if (team.sessions.length >= mostSessions) {
-          return {
-            'error':
-                'There are $mostSessions sessions already, the most there '
-                'can be. Use the ones there are.',
-          };
-        }
-        final session = team.start(
-          self(),
-          '${args['name']}',
-          '${args['task']}',
-        );
-        return {'session': session.name, 'status': 'started'};
-      },
-      shows: (args, _) => '${args['task']}',
-    ),
+        label: (args) => 'StartSession(${args['name']}, todo ${args['todo']})',
+        run: (args) async {
+          final me = self();
+          if (plan.stopped) {
+            return {
+              'error':
+                  'The user stopped this goal with /stop. Tell them what was '
+                  'done.',
+            };
+          }
+          final todo = plan.byId(args['todo']);
+          if (todo == null) {
+            return {
+              'error':
+                  'There is no todo ${args['todo']}. Add it with setTodos '
+                  'first.',
+            };
+          }
+          if (todo.status != TodoStatus.pending) {
+            return {'error': 'Todo ${todo.id} is ${todo.label(plan)} already.'};
+          }
+          if (plan.blockers(todo) case final ids when ids.isNotEmpty) {
+            return {
+              'error':
+                  'Todo ${todo.id} waits on ${ids.join(', ')}. Start it once '
+                  '${ids.length == 1 ? 'that is' : 'they are'} done.',
+            };
+          }
+          if (plan.working.length >= plan.limit) {
+            return {
+              'error':
+                  '${plan.limit} workers are working already, the most at '
+                  'once. Start this one when a worker finishes.',
+            };
+          }
+
+          // one of its workers that is done can take the next todo
+          final name = '${args['name']}'.trim();
+          final known = find(name);
+          final Session worker;
+          if (known != null &&
+              identical(known.startedBy, me) &&
+              known.idle &&
+              plan.of(known)?.status != TodoStatus.checking) {
+            worker = known;
+            team.deliver(worker, '${args['task']}', me);
+          } else {
+            if (team.sessions.length >= mostSessions) {
+              return {
+                'error':
+                    'There are $mostSessions sessions already, the most there '
+                    'can be. Give the todo to one of your workers that is '
+                    'done.',
+              };
+            }
+            worker = team.start(me, name, '${args['task']}');
+          }
+          todo
+            ..worker = worker
+            ..status = TodoStatus.working
+            ..started = plan.now();
+          return {'session': worker.name, 'todo': todo.id, 'status': 'started'};
+        },
+        shows: (args, _) => '${args['task']}',
+      ),
     Tool(
       name: 'sendMessage',
       description:
@@ -121,6 +168,20 @@ List<Tool> teamTools(Team team, Session Function() self) {
                 'its own when you finish. End your turn with your result, or '
                 'with your question for it.',
           };
+        }
+        // sending a worker back to fix its todo
+        if (plan?.of(to) case final todo?
+            when todo.status == TodoStatus.checking) {
+          if (todo.rounds >= 2) {
+            return {
+              'error':
+                  'You sent ${to.name} back twice already. Mark todo '
+                  '${todo.id} done or failed with updateTodo.',
+            };
+          }
+          todo
+            ..rounds += 1
+            ..status = TodoStatus.working;
         }
         final busy = to.busy;
         team.deliver(to, '${args['text']}', me);

@@ -223,6 +223,20 @@ class PhoneMirror {
           'mood': session.mood.name,
           'busy': session.busy,
           'spent': spent?.call(session),
+          if (session.plan case final plan?) ...{
+            'orchestrator': true,
+            'progress': plan.progress,
+            'todos': [
+              for (final todo in plan.todos)
+                {
+                  'id': todo.id,
+                  'title': todo.title,
+                  'status': todo.label(plan),
+                  'worker': ?todo.worker?.name,
+                  'workerId': ?todo.worker?.id,
+                },
+            ],
+          },
         },
     ],
   };
@@ -298,6 +312,7 @@ class PhoneMirror {
       'text': question.text,
       'options': question.options,
       'chosen': question.chosen,
+      'from': ?question.asker,
     };
   }
 
