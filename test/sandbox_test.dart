@@ -112,6 +112,26 @@ void main() {
       expect(volumes, ['$folder:$folder', '${cache.path}:${cache.path}:ro']);
     });
 
+    test(
+      'resolves Dart packages offline, inside, when there are any',
+      () async {
+        final docker = FakeDocker();
+        await start(docker);
+        expect(docker.calls.where((c) => c.first == 'exec'), isEmpty);
+
+        File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync('name: x');
+        final again = FakeDocker();
+        await start(again);
+        final exec = again.calls.singleWhere((c) => c.first == 'exec');
+        expect(exec.sublist(exec.indexOf('timeout') + 2), [
+          'dart',
+          'pub',
+          'get',
+          '--offline',
+        ]);
+      },
+    );
+
     test('clears away containers whose harness died', () async {
       final docker = FakeDocker(
         answers: {'ps': ok('harness-dead 999999\nharness-live $pid\n')},
@@ -311,13 +331,18 @@ void main() {
     });
 
     test('there is no network', () async {
-      final run = await tool(
-        box,
-        'runCommand',
-      ).run({'command': 'ls /sys/class/net; getent hosts pub.dev'});
+      final run = await tool(box, 'runCommand').run({
+        'command':
+            'grep -c . /proc/net/route; '
+            'getent hosts pub.dev || echo no names; '
+            'bash -c "echo > /dev/tcp/1.1.1.1/443" || echo no route',
+      });
 
-      expect(run['output'], 'lo\n');
-      expect(run['exitCode'], isNot(0));
+      // the route table has its header and nothing else
+      expect(run['output'], startsWith('1\n'));
+      expect(run['output'], contains('no names'));
+      expect(run['output'], contains('Network is unreachable'));
+      expect(run['output'], endsWith('no route\n'));
     });
 
     test('only the project can change', () async {
@@ -329,6 +354,45 @@ void main() {
       expect(run['exitCode'], isNot(0));
       expect(run['output'], contains('Read-only file system'));
     });
+
+    test(
+      "dart test runs on this project's packages",
+      () async {
+        final copy = Directory(p.join(dir.path, 'project'))..createSync();
+        final here = Directory.current.path;
+        for (final name in ['pubspec.yaml', 'pubspec.lock']) {
+          File(p.join(here, name)).copySync(p.join(copy.path, name));
+        }
+        Directory(p.join(copy.path, 'test')).createSync();
+        File(
+          p.join(here, 'test', 'diff_test.dart'),
+        ).copySync(p.join(copy.path, 'test', 'diff_test.dart'));
+        Directory(p.join(copy.path, 'lib', 'src')).createSync(recursive: true);
+        File(
+          p.join(here, 'lib', 'src', 'diff.dart'),
+        ).copySync(p.join(copy.path, 'lib', 'src', 'diff.dart'));
+        // resolved out here first, the way a project is
+        expect(
+          Process.runSync('dart', [
+            'pub',
+            'get',
+            '--offline',
+          ], workingDirectory: copy.path).exitCode,
+          0,
+        );
+        final inside = await Sandbox.start(copy.path);
+        addTearDown(inside.stop);
+
+        final run = await tool(
+          inside,
+          'runCommand',
+        ).run({'command': 'dart test test/diff_test.dart'});
+
+        expect(run['output'], contains('All tests passed!'));
+        expect(run['exitCode'], 0);
+      },
+      timeout: const Timeout(Duration(minutes: 3)),
+    );
 
     test('Dart runs', () async {
       File(

@@ -124,7 +124,14 @@ class Sandbox {
     if (run.exitCode != 0) {
       return off('Docker could not start it: ${_firstLine(run.stderr)}');
     }
-    return Sandbox._(folder, image, docker, name: name);
+    final box = Sandbox._(folder, image, docker, name: name);
+    // Packages resolved out here can name things the box doesn't have, like
+    // the Flutter SDK, and then dart test resolves them again, online, and
+    // fails. So they're resolved once in here, offline.
+    if (File(p.join(folder, 'pubspec.yaml')).existsSync()) {
+      await box.exec(['dart', 'pub', 'get', '--offline']);
+    }
+    return box;
   }
 
   /// Runs [command] in the container, in the project folder, cut off after
