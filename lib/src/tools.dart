@@ -13,6 +13,7 @@ class Tool {
     required this.run,
     this.diff,
     this.ask,
+    this.shows,
   });
 
   final String name;
@@ -27,6 +28,13 @@ class Tool {
   /// For a tool the user answers: the question to put to them. When it
   /// returns one, the agent waits for the answer instead of calling [run].
   final Question? Function(Map<String, dynamic> args)? ask;
+
+  /// What the user sees under the tool once it ran, when it worked.
+  final String? Function(
+    Map<String, dynamic> args,
+    Map<String, dynamic> result,
+  )?
+  shows;
 }
 
 /// The tools that read, list and update files. With a [history],

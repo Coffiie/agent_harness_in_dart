@@ -9,6 +9,7 @@ import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/question.dart';
 import 'package:coding_agent_in_dart/src/sandbox.dart';
 import 'package:coding_agent_in_dart/src/settings.dart';
+import 'package:coding_agent_in_dart/src/team.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:coding_agent_in_dart/src/tui.dart';
 import 'package:coding_agent_in_dart/src/usage.dart';
@@ -31,6 +32,42 @@ class FakeProvider implements ModelProvider {
     systems.add(system);
     requests.add(List.of(messages));
     return replies.removeAt(0);
+  }
+
+  @override
+  Future<int> countTokens(List<Message> messages) async => messages.length;
+}
+
+/// Replies by chat: each key is part of a chat's first prompt, and the
+/// chat gets that key's replies in order. A gate holds a chat's first reply
+/// until it completes.
+class ScriptedProvider implements ModelProvider {
+  ScriptedProvider(this.replies, {Map<String, Future<void>> gates = const {}})
+    : gates = Map.of(gates);
+
+  final Map<String, List<Message>> replies;
+  final Map<String, Future<void>> gates;
+  final firsts = <String, String>{};
+  final prompts = <String, List<String>>{};
+
+  @override
+  Future<Message> generate(
+    List<Message> messages, {
+    List<Tool> tools = const [],
+    String? system,
+  }) async {
+    String text(Message m) =>
+        m.parts.whereType<TextPart>().map((p) => p.text).join();
+    final first = text(messages.first);
+    // a message from another session starts with who sent it
+    final body = first.split('\n\n').last;
+    final key = replies.keys.firstWhere(body.contains);
+    firsts[key] = first;
+    if (messages.last.role == Role.user && text(messages.last).isNotEmpty) {
+      (prompts[key] ??= []).add(text(messages.last));
+    }
+    if (gates.remove(key) case final gate?) await gate;
+    return replies[key]!.removeAt(0);
   }
 
   @override
@@ -170,7 +207,7 @@ void main() {
       await tester.pump();
     });
 
-    expect(provider.systems, [systemPrompt]);
+    expect(provider.systems, ['$systemPrompt\n\n$teamPrompt']);
     expect(systemPrompt, contains('Never write a diff'));
   });
 
@@ -239,7 +276,7 @@ void main() {
       });
 
       expect(started, isFalse);
-      expect(provider.systems.single, systemPrompt);
+      expect(provider.systems.single, '$systemPrompt\n\n$teamPrompt');
     });
 
     test('the header says the tools are sandboxed', () async {
@@ -307,7 +344,10 @@ void main() {
           await tester.pump();
         });
 
-        expect(provider.systems.last, '$systemPrompt\n\n$sandboxPrompt');
+        expect(
+          provider.systems.last,
+          '$systemPrompt\n\n$sandboxPrompt\n\n$teamPrompt',
+        );
         final told = provider.requests.last.last.parts
             .whereType<TextPart>()
             .map((p) => p.text);
@@ -374,7 +414,10 @@ void main() {
         await tester.pump();
       });
 
-      expect(provider.systems.single, '$systemPrompt\n\n$sandboxPrompt');
+      expect(
+        provider.systems.single,
+        '$systemPrompt\n\n$sandboxPrompt\n\n$teamPrompt',
+      );
     });
 
     test("a command's output shows under it", () async {
@@ -434,7 +477,10 @@ void main() {
         await tester.pump();
       });
 
-      expect(provider.systems.single, '$systemPrompt\n\n$sandboxPrompt');
+      expect(
+        provider.systems.single,
+        '$systemPrompt\n\n$sandboxPrompt\n\n$teamPrompt',
+      );
       expect(sandboxPrompt, contains('no network'));
     });
   });
@@ -1407,6 +1453,142 @@ void main() {
 
         expect(tester.terminalState, containsText('»'));
         expect(tester.terminalState, isNot(containsText('Sessions')));
+      });
+    });
+  });
+
+  group('sessions working together', () {
+    const wide = Size(120, 32);
+
+    Future<void> settle(NoctermTester tester) async {
+      for (var i = 0; i < 6; i++) {
+        await Future<void>.delayed(Duration.zero);
+        await tester.pump();
+      }
+    }
+
+    Message calls(String name, Map<String, dynamic> args) =>
+        Message(Role.assistant, [ToolCall(name, args)]);
+
+    Future<void> next(NoctermTester tester) => tester.sendKeyEvent(
+      KeyboardEvent(
+        logicalKey: LogicalKey.tab,
+        modifiers: const ModifierKeys(ctrl: true),
+      ),
+    );
+
+    test(
+      'an agent starts a session, waits for it and gets its reply',
+      () async {
+        final provider = ScriptedProvider({
+          'split it': [
+            calls('startSession', {'name': 'tests', 'task': 'write the tests'}),
+            calls('waitFor', {
+              'sessions': ['tests'],
+            }),
+            say('the tests are written'),
+          ],
+          'write the tests': [say('6 tests pass')],
+        });
+
+        await testNocterm('team start', size: wide, (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(provider: provider, model: 'f'),
+          );
+          await tester.enterText('split it');
+          await tester.sendEnter();
+          await settle(tester);
+
+          final screen = tester.terminalState;
+          expect(screen, containsText('┃ StartSession(tests)'));
+          expect(screen, containsText('⎿ write the tests'));
+          expect(screen, containsText('┃ WaitFor(tests)'));
+          expect(screen, containsText('⎿ tests: 6 tests pass'));
+          expect(screen, containsText('the tests are written'));
+          // in the sidebar, under the session that started it
+          expect(screen, containsText('└ '));
+
+          await next(tester);
+          await tester.pump();
+          expect(tester.terminalState, containsText('> write the tests'));
+          expect(tester.terminalState, containsText('from split'));
+          expect(tester.terminalState, containsText('6 tests pass'));
+        });
+
+        final child = provider.firsts['write the tests']!;
+        expect(child, 'A message from the session "split":\n\nwrite the tests');
+      },
+    );
+
+    test('a message to a busy session runs once its turn ends', () async {
+      final gate = Completer<void>();
+      final provider = ScriptedProvider(
+        {
+          'lead': [
+            calls('startSession', {'name': 'worker', 'task': 'slow task'}),
+            calls('sendMessage', {'to': 'worker', 'text': 'also do x'}),
+            say('sent'),
+          ],
+          'slow task': [say('did the task'), say('did x')],
+        },
+        gates: {'slow task': gate.future},
+      );
+
+      await testNocterm('team queue', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await tester.enterText('lead');
+        await tester.sendEnter();
+        await settle(tester);
+
+        expect(tester.terminalState, containsText('⎿ also do x'));
+        expect(tester.terminalState, containsText('sent'));
+        expect(tester.terminalState, containsText('worker · working'));
+
+        gate.complete();
+        await settle(tester);
+        await next(tester);
+        await tester.pump();
+
+        final screen = tester.terminalState;
+        expect(screen, containsText('did the task'));
+        expect(screen, containsText('> also do x'));
+        expect(screen, containsText('did x'));
+      });
+      expect(provider.prompts['slow task'], [
+        'A message from the session "lead":\n\nslow task',
+        'A message from the session "lead":\n\nalso do x',
+      ]);
+    });
+
+    test('the sidebar says when a session waits on another', () async {
+      final gate = Completer<void>();
+      final provider = ScriptedProvider(
+        {
+          'boss': [
+            calls('startSession', {'name': 'helper', 'task': 'help out'}),
+            calls('waitFor', {
+              'sessions': ['helper'],
+            }),
+            say('done'),
+          ],
+          'help out': [say('helped')],
+        },
+        gates: {'help out': gate.future},
+      );
+
+      await testNocterm('team waiting', size: wide, (tester) async {
+        await tester.pumpComponent(HarnessApp(provider: provider, model: 'f'));
+        await tester.enterText('boss');
+        await tester.sendEnter();
+        await settle(tester);
+
+        expect(tester.terminalState, containsText('boss · waiting'));
+        expect(tester.terminalState, containsText('helper · working'));
+
+        gate.complete();
+        await settle(tester);
+        expect(tester.terminalState, containsText('boss · done'));
+        expect(tester.terminalState, containsText('⎿ helper: helped'));
       });
     });
   });

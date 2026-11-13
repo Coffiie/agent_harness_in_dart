@@ -161,6 +161,11 @@ class EntryView extends StatelessWidget {
           Text(
             ' from phone',
             style: mono.copyWith(color: Graphite.accent, fontSize: 11),
+          )
+        else if (entry['from'] case final String from)
+          Text(
+            ' from $from',
+            style: mono.copyWith(color: Graphite.accent, fontSize: 11),
           ),
       ],
     ),

@@ -117,7 +117,11 @@ class Agent {
           }
           final result = await tool.run(call.args);
           results.add(ToolResult(call.name, result));
-          if (_shown(result) case final shown?) yield shown;
+          if (_shown(result) case final shown?) {
+            yield shown;
+          } else if (tool.shows?.call(call.args, result) case final text?) {
+            yield ToolFinished(text);
+          }
         }
 
         _conversation.add(Message(Role.user, results));
@@ -136,7 +140,7 @@ class Agent {
       return ToolFinished(message, failed: true);
     }
     if (result['output'] case final String output) {
-      final failed = result['exitCode'] != 0;
+      final failed = result.containsKey('exitCode') && result['exitCode'] != 0;
       // a command that printed nothing shows nothing, unless it failed
       if (output.trim().isEmpty) {
         return failed

@@ -244,10 +244,11 @@ class PhoneMirror {
   Map<String, dynamic> _entry(Entry entry) {
     Map<String, dynamic> note(String text) => {'kind': 'note', 'text': text};
     return switch (entry) {
-      PromptEntry(:final text, :final fromPhone) => {
+      PromptEntry(:final text, :final fromPhone, :final from) => {
         'kind': 'prompt',
         'text': text,
         'fromPhone': fromPhone,
+        'from': ?from,
       },
       NoteEntry(:final text, :final detail) => {
         ...note(text),

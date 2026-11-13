@@ -16,6 +16,7 @@ import 'phone.dart';
 import 'question.dart';
 import 'sandbox.dart';
 import 'session.dart';
+import 'team.dart';
 import 'settings.dart';
 import 'term.dart';
 import 'tools.dart';
@@ -175,7 +176,7 @@ class HarnessApp extends StatefulComponent {
   State<HarnessApp> createState() => _HarnessAppState();
 }
 
-class _HarnessAppState extends State<HarnessApp> {
+class _HarnessAppState extends State<HarnessApp> implements Team {
   // Every session, in sidebar order. [_active] has the keyboard. [_panes]
   // is the grid, when two or more were dragged in; it shows while the
   // active session is one of them.
@@ -211,36 +212,38 @@ class _HarnessAppState extends State<HarnessApp> {
   Sandbox? _sandbox;
   Future<void>? _sandboxStart;
 
-  Agent _agent(
-    FileHistory history, [
-    Iterable<Message> conversation = const [],
-  ]) => Agent(
-    component.provider,
-    _tools(history),
-    system: _system(),
-    conversation: conversation,
-  );
+  Agent _agent(Session session, [Iterable<Message> conversation = const []]) =>
+      Agent(
+        component.provider,
+        _tools(session),
+        system: _system(),
+        conversation: conversation,
+      );
 
   // With the sandbox on, the tools run inside it, and runCommand comes with
   // them. Until it has started, the file tools are there for the first
   // request to name; _run waits for the sandbox before sending one.
-  List<Tool> _tools(FileHistory history) => [
+  List<Tool> _tools(Session session) => [
     if (_settings.sandbox && _sandbox != null)
-      ..._sandbox!.tools(history: history)
+      ..._sandbox!.tools(history: session.history)
     else
-      ...fileTools(history: history),
+      ...fileTools(history: session.history),
     askUserTool,
+    ...teamTools(this, () => session),
   ];
 
-  String _system() =>
-      _settings.sandbox ? '$systemPrompt\n\n$sandboxPrompt' : systemPrompt;
+  String _system() => [
+    systemPrompt,
+    if (_settings.sandbox) sandboxPrompt,
+    teamPrompt,
+  ].join('\n\n');
 
   // Gives every agent the tools and prompt that go with the sandbox's
   // setting, and tells the ones mid-chat what changed.
   void _retool({String? note}) {
     for (final session in _sessions) {
       session.agent
-        ..tools = _tools(session.history)
+        ..tools = _tools(session)
         ..system = _system();
       if (note != null && session.agent.conversation.isNotEmpty) {
         session.agent.note(note);
@@ -299,17 +302,58 @@ class _HarnessAppState extends State<HarnessApp> {
   }
 
   Session _newSession([Iterable<Message> conversation = const []]) {
-    final history = FileHistory();
     final id = ++_made;
-    return Session(
+    late final Session session;
+    session = Session(
       id,
       'session $id',
-      _agent(history, conversation),
-      history,
+      // swapped below, once the session is there to hand the agent
+      Agent(component.provider, const []),
+      FileHistory(),
       onChange: () {
         if (mounted) setState(() {});
       },
     )..setMood(Mood.waiting);
+    session.agent = _agent(session, conversation);
+    return session;
+  }
+
+  // ---- sessions working together ----
+
+  @override
+  List<Session> get sessions => _sessions;
+
+  @override
+  Session start(Session by, String name, String task) {
+    final session = _newSession()
+      ..name = _freeName(name)
+      ..named = true
+      ..startedBy = by;
+    setState(() {
+      // under the session that started it, after its other children
+      var at = _sessions.indexOf(by) + 1;
+      while (at < _sessions.length && _sessions[at].depth > by.depth) {
+        at++;
+      }
+      _sessions.insert(at, session);
+    });
+    unawaited(_run(session, task, from: by));
+    return session;
+  }
+
+  @override
+  void deliver(Session to, String text, Session from) {
+    if (to.busy) {
+      setState(() => to.inbox.add((text, from)));
+    } else {
+      unawaited(_run(to, text, from: from));
+    }
+  }
+
+  /// [name], or "name 2" when a session has it already.
+  String _freeName(String name) {
+    name = name.trim().isEmpty ? 'session' : name.trim();
+    return _sessions.any((s) => s.name == name) ? _copyName(name) : name;
   }
 
   @override
@@ -486,7 +530,7 @@ class _HarnessAppState extends State<HarnessApp> {
       case '/clear':
         setState(() {
           session.history.clear();
-          session.agent = _agent(session.history);
+          session.agent = _agent(session);
           session.entries.clear();
           session.context = 0;
           session.setMood(Mood.waiting);
@@ -570,6 +614,7 @@ class _HarnessAppState extends State<HarnessApp> {
     String prompt, {
     bool echo = true,
     bool fromPhone = false,
+    Session? from,
   }) async {
     setState(() {
       if (!session.named && !prompt.startsWith('/')) {
@@ -577,8 +622,13 @@ class _HarnessAppState extends State<HarnessApp> {
           ..name = sessionName(prompt)
           ..named = true;
       }
-      if (echo) session.entries.add(PromptEntry(prompt, fromPhone: fromPhone));
+      if (echo) {
+        session.entries.add(
+          PromptEntry(prompt, fromPhone: fromPhone, from: from?.name),
+        );
+      }
       session.busy = true;
+      session.lastReply = null;
       session.setMood(Mood.working);
     });
     // the first request goes out once the sandbox is there to run its tools
@@ -587,7 +637,11 @@ class _HarnessAppState extends State<HarnessApp> {
 
     final events = prompt == '/compact'
         ? session.agent.compact()
-        : session.agent.send(prompt);
+        : session.agent.send(
+            from == null
+                ? prompt
+                : 'A message from the session "${from.name}":\n\n$prompt',
+          );
 
     var failed = false;
     await for (final event in events) {
@@ -600,8 +654,12 @@ class _HarnessAppState extends State<HarnessApp> {
           case Compacted(:final after):
             session.context = after;
             session.entries.add(EventEntry(event));
-          case AgentError():
+          case AgentError(:final message):
             failed = true;
+            session.lastReply = 'Error: $message';
+            session.entries.add(EventEntry(event));
+          case AssistantText(:final text):
+            session.lastReply = text;
             session.entries.add(EventEntry(event));
           case Asked(:final question):
             session.entries.add(EventEntry(event));
@@ -617,6 +675,13 @@ class _HarnessAppState extends State<HarnessApp> {
       session.busy = false;
       session.setMood(failed ? Mood.error : Mood.done);
     });
+    // messages that came while it worked, one turn each
+    if (session.inbox.isNotEmpty) {
+      final (text, sender) = session.inbox.removeAt(0);
+      await _run(session, text, from: sender);
+    } else {
+      session.settle();
+    }
   }
 
   /// "name 2", or the next number that's free.
@@ -685,7 +750,7 @@ class _HarnessAppState extends State<HarnessApp> {
       }
       fresh.entries.removeLast();
       if (handoff.summary case final summary?) {
-        fresh.agent = _agent(fresh.history, Agent.summarized(summary));
+        fresh.agent = _agent(fresh, Agent.summarized(summary));
         fresh.entries.add(
           NoteEntry(
             'Gemini says this needs ${from.name}, so a summary of it came '
@@ -953,7 +1018,8 @@ class _HarnessAppState extends State<HarnessApp> {
 
   Component _sessionRow(Session session, AppColorsTheme colors) {
     final active = identical(session, _active);
-    final room = _sidebarWidth - 4 - 8 - session.status.length;
+    final indent = session.depth == 0 ? '' : '${'  ' * (session.depth - 1)}└ ';
+    final room = _sidebarWidth - 4 - 8 - session.status.length - indent.length;
     final name = session.name.length > room
         ? '${session.name.substring(0, room - 1)}…'
         : session.name;
@@ -962,6 +1028,8 @@ class _HarnessAppState extends State<HarnessApp> {
     return Row(
       children: [
         Text(active ? '▸ ' : '  ', style: TextStyle(color: colors.accent)),
+        if (indent.isNotEmpty)
+          Text(indent, style: TextStyle(color: colors.outline)),
         Text(
           face(session.mood, session.frame),
           style: TextStyle(color: _moodColor(session.mood, colors)),
@@ -1385,14 +1453,16 @@ class _HarnessAppState extends State<HarnessApp> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 1),
       child: switch (entry) {
-        PromptEntry(:final text, :final fromPhone) => Row(
+        PromptEntry(:final text, :final fromPhone, :final from) => Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
               child: Text('> $text', style: TextStyle(color: colors.secondary)),
             ),
             if (fromPhone)
-              Text('  from phone', style: TextStyle(color: colors.accent)),
+              Text('  from phone', style: TextStyle(color: colors.accent))
+            else if (from != null)
+              Text('  from $from', style: TextStyle(color: colors.accent)),
           ],
         ),
         EventEntry(:final event) => _event(session, event, colors),
