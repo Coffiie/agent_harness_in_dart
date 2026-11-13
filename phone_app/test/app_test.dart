@@ -172,6 +172,17 @@ void main() {
 
     expect(find.text('> hello'), findsOneWidget);
     expect(find.text(' from phone'), findsOneWidget);
+
+    tui.entries(1, 2, [
+      {
+        'kind': 'prompt',
+        'text': 'check it',
+        'fromPhone': false,
+        'from': 'lead',
+      },
+    ]);
+    await tester.pump();
+    expect(find.text(' from lead'), findsOneWidget);
     expect(find.text('Hi there'), findsOneWidget);
 
     tui.entries(1, 0, []);

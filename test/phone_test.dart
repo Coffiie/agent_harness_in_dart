@@ -269,6 +269,22 @@ void main() {
       });
     });
 
+    test('sends which session a prompt came from', () async {
+      final phone = await Phone.connect(server);
+      await settle();
+
+      sessions.first.entries.add(const PromptEntry('run it', from: 'lead'));
+      mirror.sync();
+      await settle();
+
+      expect(phone.ofType('entries').last['entries'].last, {
+        'kind': 'prompt',
+        'text': 'run it',
+        'fromPhone': false,
+        'from': 'lead',
+      });
+    });
+
     test("sends a tool's output, and whether it failed", () async {
       final phone = await Phone.connect(server);
       await settle();

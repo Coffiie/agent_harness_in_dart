@@ -71,12 +71,26 @@ class Agent {
     _conversation.add(Message(Role.user, _withNotes(prompt)));
 
     try {
+      var limited = 0;
       while (true) {
-        final reply = await provider.generate(
-          _conversation,
-          tools: tools,
-          system: system,
-        );
+        final Message reply;
+        try {
+          reply = await provider.generate(
+            _conversation,
+            tools: tools,
+            system: system,
+          );
+        } on TryLater catch (e) {
+          // the provider holds the next request back for as long as it asked
+          if (++limited > mostRetries) rethrow;
+          yield RetryWait(
+            e.retryAfter ?? const Duration(seconds: 10),
+            e.message,
+            status: e.status,
+          );
+          continue;
+        }
+        limited = 0;
         _conversation.add(reply);
         if (reply.usage case final usage?) yield UsageReported(usage);
 
@@ -117,15 +131,30 @@ class Agent {
           }
           final result = await tool.run(call.args);
           results.add(ToolResult(call.name, result));
-          if (_shown(result) case final shown?) yield shown;
+          if (_shown(result) case final shown?) {
+            yield shown;
+          } else if (tool.shows?.call(call.args, result) case final text?) {
+            yield ToolFinished(text);
+          }
         }
 
         _conversation.add(Message(Role.user, results));
       }
+    } on TryLater catch (e) {
+      yield AgentError(
+        e is RateLimited
+            ? "Gemini's rate limit, after trying $mostRetries times: "
+                  '${e.message}'
+            : 'Gemini was still busy after trying $mostRetries times: $e',
+      );
     } catch (e) {
       yield AgentError(e.toString());
     }
   }
+
+  /// How many times in a row a request is tried again after the rate limit
+  /// stops it.
+  static const mostRetries = 5;
 
   // What the user sees of a tool's result: a command's output, or an error.
   static ToolFinished? _shown(Map<String, dynamic> result) {
@@ -136,7 +165,7 @@ class Agent {
       return ToolFinished(message, failed: true);
     }
     if (result['output'] case final String output) {
-      final failed = result['exitCode'] != 0;
+      final failed = result.containsKey('exitCode') && result['exitCode'] != 0;
       // a command that printed nothing shows nothing, unless it failed
       if (output.trim().isEmpty) {
         return failed

@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:coding_agent_in_dart/src/events.dart';
 import 'package:coding_agent_in_dart/src/gemini_provider.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
+import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -230,8 +233,201 @@ void main() {
 
     expect(
       gemini.generate([hello]),
-      throwsA(predicate((e) => '$e' == 'Exception: 403: bad key')),
+      throwsA(predicate((e) => e is ProviderError && '$e' == '403: bad key')),
     );
+  });
+
+  test("keeps only the error's message from Gemini's JSON", () {
+    response = http.Response(
+      jsonEncode({
+        'error': {
+          'code': 503,
+          'message': 'The model is overloaded. Please try again later.',
+          'status': 'UNAVAILABLE',
+        },
+      }),
+      503,
+    );
+
+    expect(
+      gemini.generate([hello]),
+      throwsA(
+        predicate(
+          (e) =>
+              '$e' == '503: The model is overloaded. Please try again later.',
+        ),
+      ),
+    );
+  });
+
+  group('rate limit', () {
+    var now = DateTime(2026, 11, 13, 12);
+    late List<Duration> slept;
+
+    setUp(() {
+      slept = [];
+      gemini = GeminiProvider(
+        'key',
+        clock: () => now,
+        sleep: (wait) async {
+          slept.add(wait);
+          now = now.add(wait);
+        },
+        client: MockClient((request) async {
+          requests.add(request);
+          return response;
+        }),
+      );
+    });
+
+    http.Response limited(String delay) => http.Response(
+      jsonEncode({
+        'error': {
+          'code': 429,
+          'message':
+              'You exceeded your current quota.\n* Quota exceeded for metric',
+          'status': 'RESOURCE_EXHAUSTED',
+          'details': [
+            {'@type': 'type.googleapis.com/google.rpc.QuotaFailure'},
+            {
+              '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+              'retryDelay': delay,
+            },
+          ],
+        },
+      }),
+      429,
+    );
+
+    test('says how long Gemini asked to wait, in a line', () async {
+      response = limited('34s');
+
+      await expectLater(
+        gemini.generate([hello]),
+        throwsA(
+          isA<RateLimited>()
+              .having((e) => e.retryAfter, 'retryAfter', Duration(seconds: 34))
+              .having(
+                (e) => e.message,
+                'message',
+                'You exceeded your current quota.',
+              ),
+        ),
+      );
+    });
+
+    test('holds every request back until then', () async {
+      response = limited('34s');
+      await expectLater(gemini.generate([hello]), throwsA(isA<RateLimited>()));
+
+      respond(
+        reply([
+          {'text': 'hi'},
+        ]),
+      );
+      now = now.add(const Duration(seconds: 4));
+      await gemini.generate([hello]);
+      await gemini.countTokens([hello]).catchError((_) => 0);
+
+      expect(slept, [const Duration(seconds: 30)]);
+      expect(requests, hasLength(3));
+    });
+
+    test('gives up on a request with no answer, and tries again', () async {
+      gemini = GeminiProvider(
+        'key',
+        clock: () => now,
+        sleep: (wait) async {
+          slept.add(wait);
+          now = now.add(wait);
+        },
+        timeout: const Duration(milliseconds: 20),
+        client: MockClient((request) {
+          requests.add(request);
+          // Gemini holds the first one open
+          return requests.length == 1
+              ? Completer<http.Response>().future
+              : Future.value(response);
+        }),
+      );
+      respond(
+        reply([
+          {'text': 'hi'},
+        ]),
+      );
+
+      await expectLater(
+        gemini.generate([hello]),
+        throwsA(
+          isA<TryLater>()
+              .having((e) => e.status, 'status', 408)
+              .having((e) => e.retryAfter, 'retryAfter', Duration(seconds: 5)),
+        ),
+      );
+      final answer = await gemini.generate([hello]);
+
+      expect((answer.parts.single as TextPart).text, 'hi');
+      expect(slept, [const Duration(seconds: 5)]);
+      expect(
+        retryNote(const RetryWait(Duration(seconds: 5), '', status: 408)),
+        "Gemini didn't answer: waiting 5s, then trying again",
+      );
+    });
+
+    test('backs off from a busy Gemini, longer each time in a row', () async {
+      http.Response busy() => http.Response(
+        jsonEncode({
+          'error': {
+            'code': 503,
+            'message': 'This model is currently experiencing high demand.',
+            'status': 'UNAVAILABLE',
+          },
+        }),
+        503,
+      );
+      final waits = <Duration?>[];
+      Future<void> attempt() async {
+        try {
+          await gemini.generate([hello]);
+          waits.add(null);
+        } on TryLater catch (e) {
+          expect(e, isNot(isA<RateLimited>()));
+          expect(
+            '$e',
+            '503: This model is currently experiencing high demand.',
+          );
+          waits.add(e.retryAfter);
+        }
+      }
+
+      response = busy();
+      await attempt();
+      await attempt();
+      await attempt();
+      respond(
+        reply([
+          {'text': 'hi'},
+        ]),
+      );
+      await attempt();
+      response = busy();
+      await attempt();
+
+      expect(waits, [
+        const Duration(seconds: 5),
+        const Duration(seconds: 10),
+        const Duration(seconds: 20),
+        null,
+        // a reply starts it over
+        const Duration(seconds: 5),
+      ]);
+      // and each request waited out the one before
+      expect(slept, [
+        const Duration(seconds: 5),
+        const Duration(seconds: 10),
+        const Duration(seconds: 20),
+      ]);
+    });
   });
 
   test('throws when the reply has no content', () async {

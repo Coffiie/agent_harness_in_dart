@@ -13,12 +13,15 @@ sealed class Entry {
 }
 
 class PromptEntry extends Entry {
-  const PromptEntry(this.text, {this.fromPhone = false});
+  const PromptEntry(this.text, {this.fromPhone = false, this.from});
 
   final String text;
 
   /// Sent from the phone app.
   final bool fromPhone;
+
+  /// The name of the session whose agent sent it, when one did.
+  final String? from;
 }
 
 class EventEntry extends Entry {
@@ -79,6 +82,17 @@ String sessionName(String prompt) {
   return first.length > 16 ? '${first.substring(0, 15)}…' : first;
 }
 
+/// A message for a session from another one's agent. A [report] is the
+/// last reply of a session [from] started on its own, going back to
+/// whoever started it.
+class Mail {
+  const Mail(this.text, this.from, {this.report = false});
+
+  final String text;
+  final Session from;
+  final bool report;
+}
+
 /// One chat in the TUI, with its own agent, transcript, input and Term.
 /// The app keeps several and shows one, or a grid of them.
 class Session {
@@ -131,9 +145,58 @@ class Session {
   var typing = false;
   final answerInput = TextEditingController();
 
+  // ---- working with other sessions ----
+
+  /// The session whose agent started this one, if one did.
+  Session? startedBy;
+
+  /// How many sessions up the [startedBy] line goes.
+  int get depth => startedBy == null ? 0 : startedBy!.depth + 1;
+
+  /// Messages from other sessions that came while this one was busy, to
+  /// run in order once it's free.
+  final inbox = <Mail>[];
+
+  /// The sessions this one's agent is waiting on.
+  final waitingOn = <Session>{};
+
+  /// The agent's last reply in its last turn, for whoever waits on it.
+  String? lastReply;
+
+  final _idle = <Completer<void>>[];
+
+  /// Done with its work and its messages.
+  bool get idle => !busy && inbox.isEmpty;
+
+  /// Completes once the session is [idle].
+  Future<void> whenIdle() {
+    if (idle) return Future.value();
+    final done = Completer<void>();
+    _idle.add(done);
+    return done.future;
+  }
+
+  /// Tells whoever waits that the session is [idle], if it is.
+  void settle() {
+    if (!idle) return;
+    for (final done in _idle) {
+      done.complete();
+    }
+    _idle.clear();
+  }
+
+  /// Whether this session waits on [other], itself or through others.
+  bool waitsOn(Session other, [Set<Session>? seen]) {
+    seen ??= {};
+    if (!seen.add(this)) return false;
+    return waitingOn.contains(other) ||
+        waitingOn.any((s) => s.waitsOn(other, seen));
+  }
+
   /// What the sidebar says about it.
   String get status => switch (mood) {
     Mood.waiting => 'idle',
+    Mood.working when waitingOn.isNotEmpty => 'waiting',
     Mood.working => 'working',
     Mood.done => 'done',
     Mood.error => 'error',

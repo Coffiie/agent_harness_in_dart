@@ -58,6 +58,8 @@ void main(List<String> arguments) async {
           print(
             '${toolSeparator()} Compacted conversation from $before tokens to $after tokens',
           );
+        case RetryWait():
+          print('${toolSeparator()} ${retryNote(event)}\n');
         case AgentError(:final message):
           print('Error generating content: $message');
         case UsageReported():
