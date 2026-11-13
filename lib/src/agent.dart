@@ -136,7 +136,17 @@ class Agent {
       return ToolFinished(message, failed: true);
     }
     if (result['output'] case final String output) {
-      return ToolFinished(output, failed: result['exitCode'] != 0);
+      final failed = result['exitCode'] != 0;
+      // a command that printed nothing shows nothing, unless it failed
+      if (output.trim().isEmpty) {
+        return failed
+            ? ToolFinished(switch (result['exitCode']) {
+                final int code => 'exit code $code',
+                final other => '$other',
+              }, failed: true)
+            : null;
+      }
+      return ToolFinished(output, failed: failed);
     }
     return null;
   }

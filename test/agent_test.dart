@@ -85,6 +85,8 @@ void main() {
     );
     final provider = FakeProvider([
       call('passes', {}),
+      call('quiet', {}),
+      call('quietFail', {}),
       call('fails', {}),
       call('missing', {}),
       call('refused', {}),
@@ -94,6 +96,8 @@ void main() {
 
     final events = await Agent(provider, [
       says('passes', {'exitCode': 0, 'output': 'All tests passed!'}),
+      says('quiet', {'exitCode': 0, 'output': ''}),
+      says('quietFail', {'exitCode': 2, 'output': '\n'}),
       says('fails', {'exitCode': 1, 'output': 'Some tests failed.'}),
       says('missing', {'error': 'No such file or directory'}),
       says('refused', {'status': 'error', 'message': 'Read-only file system'}),
@@ -102,6 +106,7 @@ void main() {
 
     expect(events.whereType<ToolFinished>().map((e) => (e.output, e.failed)), [
       ('All tests passed!', false),
+      ('exit code 2', true),
       ('Some tests failed.', true),
       ('No such file or directory', true),
       ('Read-only file system', true),
