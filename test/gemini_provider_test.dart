@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:coding_agent_in_dart/src/gemini_provider.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
+import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -230,8 +231,105 @@ void main() {
 
     expect(
       gemini.generate([hello]),
-      throwsA(predicate((e) => '$e' == 'Exception: 403: bad key')),
+      throwsA(predicate((e) => e is ProviderError && '$e' == '403: bad key')),
     );
+  });
+
+  test("keeps only the error's message from Gemini's JSON", () {
+    response = http.Response(
+      jsonEncode({
+        'error': {
+          'code': 503,
+          'message': 'The model is overloaded. Please try again later.',
+          'status': 'UNAVAILABLE',
+        },
+      }),
+      503,
+    );
+
+    expect(
+      gemini.generate([hello]),
+      throwsA(
+        predicate(
+          (e) =>
+              '$e' == '503: The model is overloaded. Please try again later.',
+        ),
+      ),
+    );
+  });
+
+  group('rate limit', () {
+    var now = DateTime(2026, 11, 13, 12);
+    late List<Duration> slept;
+
+    setUp(() {
+      slept = [];
+      gemini = GeminiProvider(
+        'key',
+        clock: () => now,
+        sleep: (wait) async {
+          slept.add(wait);
+          now = now.add(wait);
+        },
+        client: MockClient((request) async {
+          requests.add(request);
+          return response;
+        }),
+      );
+    });
+
+    http.Response limited(String delay) => http.Response(
+      jsonEncode({
+        'error': {
+          'code': 429,
+          'message':
+              'You exceeded your current quota.\n* Quota exceeded for metric',
+          'status': 'RESOURCE_EXHAUSTED',
+          'details': [
+            {'@type': 'type.googleapis.com/google.rpc.QuotaFailure'},
+            {
+              '@type': 'type.googleapis.com/google.rpc.RetryInfo',
+              'retryDelay': delay,
+            },
+          ],
+        },
+      }),
+      429,
+    );
+
+    test('says how long Gemini asked to wait, in a line', () async {
+      response = limited('34s');
+
+      await expectLater(
+        gemini.generate([hello]),
+        throwsA(
+          isA<RateLimited>()
+              .having((e) => e.retryAfter, 'retryAfter', Duration(seconds: 34))
+              .having(
+                (e) => e.message,
+                'message',
+                'You exceeded your current quota.',
+              ),
+        ),
+      );
+    });
+
+    test('holds every request back until then', () async {
+      response = limited('34s');
+      await expectLater(gemini.generate([hello]), throwsA(isA<RateLimited>()));
+
+      respond(
+        reply([
+          {'text': 'hi'},
+        ]),
+      );
+      now = now.add(const Duration(seconds: 4));
+      await gemini.generate([hello]);
+      await gemini.countTokens([hello]).catchError((_) => 0);
+
+      expect(slept, [const Duration(seconds: 30)]);
+      expect(requests, hasLength(3));
+    });
   });
 
   test('throws when the reply has no content', () async {

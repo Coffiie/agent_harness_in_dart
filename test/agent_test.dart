@@ -363,4 +363,71 @@ void main() {
       expect(provider.requests, isEmpty);
     });
   });
+
+  group('rate limit', () {
+    test('waits and tries the same request again', () async {
+      var calls = 0;
+      final provider = ScriptedFailures([
+        const RateLimited('quota', retryAfter: Duration(seconds: 34)),
+        const RateLimited('quota'),
+      ], then: say('hi'));
+
+      final events = await Agent(provider, [echo]).send('hello').toList();
+      calls = provider.calls;
+
+      expect(events, [
+        isA<RateLimitWait>()
+            .having((e) => e.wait, 'wait', const Duration(seconds: 34))
+            .having((e) => e.message, 'message', 'quota'),
+        isA<RateLimitWait>().having(
+          (e) => e.wait,
+          'wait',
+          const Duration(seconds: 10),
+        ),
+        isA<AssistantText>().having((e) => e.text, 'text', 'hi'),
+      ]);
+      expect(calls, 3);
+      // the same chat each time: the prompt, then the reply
+      expect(provider.sizes, [1, 1, 1]);
+    });
+
+    test('gives up after ${Agent.mostRetries} tries in a row', () async {
+      final provider = ScriptedFailures([
+        for (var i = 0; i <= Agent.mostRetries; i++) const RateLimited('quota'),
+      ], then: say('never'));
+
+      final events = await Agent(provider, [echo]).send('hello').toList();
+
+      expect(events.whereType<RateLimitWait>(), hasLength(Agent.mostRetries));
+      expect(
+        (events.last as AgentError).message,
+        "Gemini's rate limit, after trying ${Agent.mostRetries} times: quota",
+      );
+    });
+  });
+}
+
+/// Throws [failures] one call at a time, then answers [then].
+class ScriptedFailures implements ModelProvider {
+  ScriptedFailures(this.failures, {required this.then});
+
+  final List<Exception> failures;
+  final Message then;
+  var calls = 0;
+  final sizes = <int>[];
+
+  @override
+  Future<Message> generate(
+    List<Message> messages, {
+    List<Tool> tools = const [],
+    String? system,
+  }) async {
+    calls++;
+    sizes.add(messages.length);
+    if (failures.isNotEmpty) throw failures.removeAt(0);
+    return then;
+  }
+
+  @override
+  Future<int> countTokens(List<Message> messages) async => messages.length;
 }

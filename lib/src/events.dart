@@ -55,6 +55,19 @@ class Compacted extends AgentEvent {
   final int after;
 }
 
+/// The provider's rate limit stopped a request. The agent waits [wait],
+/// then tries it again.
+class RateLimitWait extends AgentEvent {
+  const RateLimitWait(this.wait, this.message);
+
+  final Duration wait;
+  final String message;
+}
+
+/// What the TUI and the phone say about a [RateLimitWait].
+String rateLimitNote(RateLimitWait wait) =>
+    "Gemini's rate limit: waiting ${wait.wait.inSeconds}s, then trying again";
+
 class AgentError extends AgentEvent {
   const AgentError(this.message);
 

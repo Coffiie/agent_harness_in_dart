@@ -82,6 +82,17 @@ String sessionName(String prompt) {
   return first.length > 16 ? '${first.substring(0, 15)}…' : first;
 }
 
+/// A message for a session from another one's agent. A [report] is the
+/// last reply of a session [from] started on its own, going back to
+/// whoever started it.
+class Mail {
+  const Mail(this.text, this.from, {this.report = false});
+
+  final String text;
+  final Session from;
+  final bool report;
+}
+
 /// One chat in the TUI, with its own agent, transcript, input and Term.
 /// The app keeps several and shows one, or a grid of them.
 class Session {
@@ -144,7 +155,7 @@ class Session {
 
   /// Messages from other sessions that came while this one was busy, to
   /// run in order once it's free.
-  final inbox = <(String, Session)>[];
+  final inbox = <Mail>[];
 
   /// The sessions this one's agent is waiting on.
   final waitingOn = <Session>{};

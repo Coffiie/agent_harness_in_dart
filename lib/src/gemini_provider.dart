@@ -14,11 +14,21 @@ class GeminiProvider implements ModelProvider {
     this._apiKey, {
     this.model = 'gemini-3.1-flash-lite',
     http.Client? client,
-  }) : _client = client ?? http.Client();
+    DateTime Function()? clock,
+    Future<void> Function(Duration)? sleep,
+  }) : _client = client ?? http.Client(),
+       _clock = clock ?? DateTime.now,
+       _sleep = sleep ?? Future<void>.delayed;
 
   final String _apiKey;
   final http.Client _client;
   final String model;
+
+  // Every session shares this provider, so when Gemini says to slow down,
+  // they all wait until [_pausedUntil] before the next request.
+  final DateTime Function() _clock;
+  final Future<void> Function(Duration) _sleep;
+  DateTime? _pausedUntil;
 
   @override
   Future<Message> generate(
@@ -127,16 +137,64 @@ class GeminiProvider implements ModelProvider {
     String method,
     Map<String, dynamic> body,
   ) async {
+    while (true) {
+      final until = _pausedUntil;
+      if (until == null) break;
+      final left = until.difference(_clock());
+      if (left <= Duration.zero) break;
+      await _sleep(left);
+    }
+
     final response = await _client.post(
       Uri.parse('$_baseUrl/$model:$method'),
       headers: {'Content-Type': 'application/json', 'x-goog-api-key': _apiKey},
       body: jsonEncode(body),
     );
 
+    if (response.statusCode == 429) {
+      final wait = _retryDelay(response.body) ?? const Duration(seconds: 10);
+      final until = _clock().add(wait);
+      if (_pausedUntil == null || until.isAfter(_pausedUntil!)) {
+        _pausedUntil = until;
+      }
+      throw RateLimited(_message(response.body), retryAfter: wait);
+    }
     if (response.statusCode != 200) {
-      throw Exception('${response.statusCode}: ${response.body}');
+      throw ProviderError(response.statusCode, _message(response.body));
     }
 
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
+}
+
+// The first line of the error's message, or the start of the body when it
+// isn't Gemini's JSON.
+String _message(String body) {
+  try {
+    if (jsonDecode(body) case {'error': {'message': final String message}}) {
+      return message.trim().split('\n').first;
+    }
+  } on FormatException {
+    // not JSON
+  }
+  final text = body.trim();
+  return text.length > 200 ? '${text.substring(0, 200)}…' : text;
+}
+
+// How long Gemini asked to wait, from the RetryInfo in a 429: "34s".
+Duration? _retryDelay(String body) {
+  try {
+    final details = (jsonDecode(body) as Map)['error']['details'] as List;
+    for (final detail in details) {
+      if (detail case {'retryDelay': final String delay}) {
+        final seconds = double.tryParse(delay.replaceAll('s', ''));
+        if (seconds != null) {
+          return Duration(milliseconds: (seconds * 1000).round());
+        }
+      }
+    }
+  } catch (_) {
+    // no RetryInfo
+  }
+  return null;
 }

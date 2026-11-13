@@ -23,8 +23,13 @@ const teamPrompt =
     'When a task splits into parts that can be done at the same time, start '
     'a session for each part, wait for them, then check their work. A new '
     "session doesn't see your chat, so give it everything it needs in the "
-    'task. A message from another session starts with who sent it; answer '
-    'it with sendMessage when it asks you something.';
+    'task. When a session you started finishes, its last reply comes to '
+    "you as a message, unless you're waiting on it with waitFor. When "
+    'another session started you, your last reply goes back to it on its '
+    "own when you finish, so don't send it your result with sendMessage; "
+    'use sendMessage to ask it something. A message from another session '
+    'starts with who sent it; answer it with sendMessage when it asks you '
+    'something.';
 
 /// How many sessions there can be, so agents can't start them forever.
 const mostSessions = 8;
@@ -158,6 +163,9 @@ List<Tool> teamTools(Team team, Session Function() self) {
         } finally {
           me.waitingOn.removeAll(targets);
         }
+        // their replies are in the result, so reports from them that came
+        // in before this call would only say it again
+        me.inbox.removeWhere((m) => m.report && targets.contains(m.from));
         return {
           'replies': {
             for (final t in targets) t.name: t.lastReply ?? '(no reply)',

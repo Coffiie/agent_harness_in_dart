@@ -164,7 +164,7 @@ void main() {
     );
 
     test('a session with messages left is not done yet', () async {
-      tests.inbox.add(('one more thing', lead));
+      tests.inbox.add(Mail('one more thing', lead));
       var done = false;
       final waiting = tool('waitFor')
           .run({
@@ -182,6 +182,19 @@ void main() {
         ..settle();
       await waiting;
       expect(done, isTrue);
+    });
+
+    test('drops the reports it already returns', () async {
+      final queued = Mail('Wrote the tests.', tests, report: true);
+      final question = Mail('Which folder?', docs);
+      lead.inbox.addAll([queued, question]);
+      tests.lastReply = 'Wrote the tests.';
+
+      await tool('waitFor').run({
+        'sessions': ['tests'],
+      });
+
+      expect(lead.inbox, [question]);
     });
 
     test("won't wait on a session that waits on this one", () async {

@@ -1517,6 +1517,43 @@ void main() {
 
         final child = provider.firsts['write the tests']!;
         expect(child, 'A message from the session "split":\n\nwrite the tests');
+        // it waited, so the reply came from waitFor and nothing else
+        expect(provider.prompts['split it'], ['split it']);
+      },
+    );
+
+    test(
+      "a started session's last reply goes back to its starter on its own",
+      () async {
+        final provider = ScriptedProvider({
+          'hand it off': [
+            calls('startSession', {'name': 'docs', 'task': 'write a README'}),
+            say('docs is on it'),
+            say('README checked'),
+          ],
+          'write a README': [say('Wrote README.md')],
+        });
+
+        await testNocterm('team report', size: wide, (tester) async {
+          await tester.pumpComponent(
+            HarnessApp(provider: provider, model: 'f'),
+          );
+          await tester.enterText('hand it off');
+          await tester.sendEnter();
+          await settle(tester);
+
+          final screen = tester.terminalState;
+          expect(screen, containsText('docs is on it'));
+          expect(screen, containsText('> Wrote README.md'));
+          expect(screen, containsText('from docs'));
+          expect(screen, containsText('README checked'));
+        });
+
+        expect(provider.prompts['hand it off'], [
+          'hand it off',
+          'The session "docs" you started finished. Its last reply:\n\n'
+              'Wrote README.md',
+        ]);
       },
     );
 
@@ -1528,6 +1565,8 @@ void main() {
             calls('startSession', {'name': 'worker', 'task': 'slow task'}),
             calls('sendMessage', {'to': 'worker', 'text': 'also do x'}),
             say('sent'),
+            say('noted the task'),
+            say('noted x'),
           ],
           'slow task': [say('did the task'), say('did x')],
         },

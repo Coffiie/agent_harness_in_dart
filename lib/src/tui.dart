@@ -341,10 +341,18 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     return session;
   }
 
+  void _report(Session to, String text, Session from) {
+    if (to.busy) {
+      setState(() => to.inbox.add(Mail(text, from, report: true)));
+    } else {
+      unawaited(_run(to, text, from: from, report: true));
+    }
+  }
+
   @override
   void deliver(Session to, String text, Session from) {
     if (to.busy) {
-      setState(() => to.inbox.add((text, from)));
+      setState(() => to.inbox.add(Mail(text, from)));
     } else {
       unawaited(_run(to, text, from: from));
     }
@@ -615,6 +623,7 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     bool echo = true,
     bool fromPhone = false,
     Session? from,
+    bool report = false,
   }) async {
     setState(() {
       if (!session.named && !prompt.startsWith('/')) {
@@ -638,9 +647,13 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     final events = prompt == '/compact'
         ? session.agent.compact()
         : session.agent.send(
-            from == null
-                ? prompt
-                : 'A message from the session "${from.name}":\n\n$prompt',
+            switch (from) {
+              null => prompt,
+              _ when report =>
+                'The session "${from.name}" you started finished. Its last '
+                    'reply:\n\n$prompt',
+              _ => 'A message from the session "${from.name}":\n\n$prompt',
+            },
           );
 
     var failed = false;
@@ -676,9 +689,18 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       session.setMood(failed ? Mood.error : Mood.done);
     });
     // messages that came while it worked, one turn each
+    // a session started by another tells it how the work went, unless
+    // that one waits on it and gets the reply from waitFor
+    final boss = session.startedBy;
+    if (boss != null &&
+        identical(from, boss) &&
+        !boss.waitingOn.contains(session) &&
+        _sessions.contains(boss)) {
+      _report(boss, session.lastReply ?? '(no reply)', session);
+    }
     if (session.inbox.isNotEmpty) {
-      final (text, sender) = session.inbox.removeAt(0);
-      await _run(session, text, from: sender);
+      final mail = session.inbox.removeAt(0);
+      await _run(session, mail.text, from: mail.from, report: mail.report);
     } else {
       session.settle();
     }
@@ -1514,6 +1536,10 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       ),
       UsageReported() => const SizedBox(),
       Asked(:final question) => _asked(session, question, colors),
+      RateLimitWait() => Text(
+        '┃ ${rateLimitNote(event)}',
+        style: TextStyle(color: colors.secondary),
+      ),
       AgentError(:final message) => Text(
         'Error: $message',
         style: TextStyle(color: colors.error),

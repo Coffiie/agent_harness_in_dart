@@ -71,12 +71,25 @@ class Agent {
     _conversation.add(Message(Role.user, _withNotes(prompt)));
 
     try {
+      var limited = 0;
       while (true) {
-        final reply = await provider.generate(
-          _conversation,
-          tools: tools,
-          system: system,
-        );
+        final Message reply;
+        try {
+          reply = await provider.generate(
+            _conversation,
+            tools: tools,
+            system: system,
+          );
+        } on RateLimited catch (e) {
+          // the provider holds the next request back for as long as it asked
+          if (++limited > mostRetries) rethrow;
+          yield RateLimitWait(
+            e.retryAfter ?? const Duration(seconds: 10),
+            e.message,
+          );
+          continue;
+        }
+        limited = 0;
         _conversation.add(reply);
         if (reply.usage case final usage?) yield UsageReported(usage);
 
@@ -126,10 +139,18 @@ class Agent {
 
         _conversation.add(Message(Role.user, results));
       }
+    } on RateLimited catch (e) {
+      yield AgentError(
+        "Gemini's rate limit, after trying $mostRetries times: ${e.message}",
+      );
     } catch (e) {
       yield AgentError(e.toString());
     }
   }
+
+  /// How many times in a row a request is tried again after the rate limit
+  /// stops it.
+  static const mostRetries = 5;
 
   // What the user sees of a tool's result: a command's output, or an error.
   static ToolFinished? _shown(Map<String, dynamic> result) {

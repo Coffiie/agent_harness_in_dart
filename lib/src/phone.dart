@@ -282,6 +282,7 @@ class PhoneMirror {
           'Compacted conversation from $before tokens to $after tokens',
         ),
         Asked(:final question) => _asked(question),
+        RateLimitWait() => note(rateLimitNote(event)),
         AgentError(:final message) => {'kind': 'error', 'text': message},
         UsageReported() => {'kind': 'usage'}, // drawn as nothing
       },
