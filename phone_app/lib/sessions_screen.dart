@@ -36,7 +36,11 @@ class SessionsScreen extends StatelessWidget {
                   ),
                   title: Text(session.name, style: mono),
                   subtitle: Text(
-                    [session.status, ?session.spent].join(' · '),
+                    [
+                      session.status,
+                      ?session.progress,
+                      ?session.spent,
+                    ].join(' · '),
                     style: mono.copyWith(
                       color: session.status == 'needs you'
                           ? Graphite.accent

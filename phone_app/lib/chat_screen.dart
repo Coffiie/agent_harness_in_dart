@@ -20,7 +20,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _send(SessionInfo session) {
     final text = _input.text.trim();
-    if (text.isEmpty || session.busy) return;
+    if (text.isEmpty || session.busy && !session.orchestrator) return;
     widget.link.prompt(session.id, text);
     _input.clear();
     // out of the way, so the whole screen shows the session working
@@ -62,7 +62,12 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                     if (session != null)
                       Text(
-                        [session.status, ?session.spent].join(' · '),
+                        [
+                          if (session.orchestrator) 'orchestrator',
+                          session.status,
+                          ?session.progress,
+                          ?session.spent,
+                        ].join(' · '),
                         style: mono.copyWith(
                           fontSize: 12,
                           color: Graphite.secondary,
@@ -77,6 +82,8 @@ class _ChatScreenState extends State<ChatScreen> {
         body: Column(
           children: [
             if (link.closed) const Disconnected(),
+            if (session != null && session.todos.isNotEmpty)
+              TodoList(session: session, link: link),
             Expanded(
               child: ListView.builder(
                 reverse: true,
@@ -86,7 +93,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 itemCount: entries.length,
                 itemBuilder: (context, i) => Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: EntryView(entry: entries[i], link: link),
+                  child: EntryView(
+                    entry: entries[i],
+                    link: link,
+                    session: session?.name,
+                  ),
                 ),
               ),
             ),
@@ -120,7 +131,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 border: InputBorder.none,
                 enabledBorder: InputBorder.none,
                 focusedBorder: InputBorder.none,
-                hintText: session.busy
+                hintText: session.orchestrator
+                    ? 'Add another goal'
+                    : session.busy
                     ? 'Term is working…'
                     : 'Ask anything, or /new /fork /undo',
               ),
@@ -128,7 +141,9 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
           IconButton(
             key: const Key('send'),
-            onPressed: session.busy ? null : () => _send(session),
+            onPressed: session.busy && !session.orchestrator
+                ? null
+                : () => _send(session),
             icon: const Icon(Icons.arrow_upward_rounded),
             color: Graphite.accent,
             disabledColor: Graphite.outline,
@@ -141,10 +156,19 @@ class _ChatScreenState extends State<ChatScreen> {
 
 /// One transcript entry, drawn like the TUI draws it.
 class EntryView extends StatelessWidget {
-  const EntryView({super.key, required this.entry, required this.link});
+  const EntryView({
+    super.key,
+    required this.entry,
+    required this.link,
+    this.session,
+  });
 
   final Map<String, dynamic> entry;
   final Link link;
+
+  /// The name of the session it's in, so a question another session asked
+  /// can say who asked.
+  final String? session;
 
   @override
   Widget build(BuildContext context) => switch (entry['kind']) {
@@ -192,7 +216,11 @@ class EntryView extends StatelessWidget {
       'Error: ${entry['text']}',
       style: mono.copyWith(color: Graphite.error),
     ),
-    'question' => QuestionCard(entry: entry, link: link),
+    'question' => QuestionCard(
+      entry: entry,
+      link: link,
+      asker: entry['from'] == session ? null : entry['from'] as String?,
+    ),
     _ => Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -310,10 +338,18 @@ class Diff extends StatelessWidget {
 /// labelled and already picked, so answering it is one tap on Answer. Once
 /// anyone answers, here or in the TUI, it shows the choice.
 class QuestionCard extends StatefulWidget {
-  const QuestionCard({super.key, required this.entry, required this.link});
+  const QuestionCard({
+    super.key,
+    required this.entry,
+    required this.link,
+    this.asker,
+  });
 
   final Map<String, dynamic> entry;
   final Link link;
+
+  /// The worker that asked, when it's not this session.
+  final String? asker;
 
   @override
   State<QuestionCard> createState() => _QuestionCardState();
@@ -354,7 +390,8 @@ class _QuestionCardState extends State<QuestionCard> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Text(
-            '? ${widget.entry['text']}',
+            '? ${widget.asker == null ? '' : '${widget.asker} asks: '}'
+            '${widget.entry['text']}',
             style: mono.copyWith(fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
@@ -458,4 +495,91 @@ class _Option extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// An orchestrator's todos, pinned above its chat. Tapping one opens the
+/// worker doing it.
+class TodoList extends StatelessWidget {
+  const TodoList({super.key, required this.session, required this.link});
+
+  final SessionInfo session;
+  final Link link;
+
+  @override
+  Widget build(BuildContext context) {
+    final done = session.todos.where((t) => t.status == 'done').length;
+    return Container(
+      key: const Key('todos'),
+      constraints: const BoxConstraints(maxHeight: 220),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: Graphite.surface)),
+      ),
+      child: ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(14, 8, 14, 8),
+        children: [
+          Text(
+            'Todos · $done of ${session.todos.length} done',
+            style: mono.copyWith(
+              fontWeight: FontWeight.bold,
+              color: Graphite.accent,
+            ),
+          ),
+          const SizedBox(height: 4),
+          for (final todo in session.todos) _row(context, todo),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(BuildContext context, TodoInfo todo) {
+    final asks = todo.status == 'asks you';
+    final (icon, color) = switch (todo.status) {
+      'done' => ('✓', Graphite.tool),
+      'failed' => ('×', Graphite.error),
+      'working' => ('●', Graphite.accent),
+      'checking' => ('◐', Graphite.primary),
+      'asks you' => ('?', Graphite.accent),
+      _ => ('○', Graphite.secondary),
+    };
+    return InkWell(
+      key: Key('todo ${todo.id}'),
+      onTap: todo.workerId == null || link.session(todo.workerId!) == null
+          ? null
+          : () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ChatScreen(link: link, id: todo.workerId!),
+              ),
+            ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: Row(
+          children: [
+            Text('$icon ', style: mono.copyWith(color: color)),
+            Expanded(
+              child: Text(
+                todo.title,
+                overflow: TextOverflow.ellipsis,
+                style: mono.copyWith(
+                  fontSize: 13,
+                  color:
+                      todo.status == 'ready' || todo.status.startsWith('waits')
+                      ? Graphite.secondary
+                      : Graphite.primary,
+                ),
+              ),
+            ),
+            Text(
+              [?todo.worker, if (todo.status != 'done') todo.status].join('  '),
+              style: mono.copyWith(
+                fontSize: 12,
+                color: asks ? Graphite.accent : Graphite.secondary,
+                fontWeight: asks ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

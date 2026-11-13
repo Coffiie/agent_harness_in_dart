@@ -202,6 +202,109 @@ void main() {
     expect(tui.sent, isEmpty);
   });
 
+  group('an orchestrator', () {
+    Map<String, dynamic> lead({bool busy = true}) => {
+      ...info(1, 'hanoi', status: 'waiting', mood: 'working', busy: busy),
+      'orchestrator': true,
+      'progress': '1/3',
+      'todos': [
+        {
+          'id': 1,
+          'title': 'Write hanoi',
+          'status': 'done',
+          'worker': 'hanoi',
+          'workerId': 2,
+        },
+        {
+          'id': 2,
+          'title': 'Write a README',
+          'status': 'asks you',
+          'worker': 'readme',
+          'workerId': 3,
+        },
+        {'id': 3, 'title': 'Add an example', 'status': 'waits on 2'},
+      ],
+    };
+
+    testWidgets('shows its todos and progress', (tester) async {
+      await connect(tester);
+      tui.sessions([
+        lead(),
+        info(2, 'hanoi', status: 'done', mood: 'done'),
+        info(3, 'readme', status: 'needs you', mood: 'needs'),
+      ]);
+      await tester.pump();
+
+      expect(find.text('waiting · 1/3'), findsOneWidget);
+      await open(tester, 1);
+
+      expect(find.text('Todos · 1 of 3 done'), findsOneWidget);
+      expect(find.text('Write a README'), findsOneWidget);
+      expect(find.text('readme  asks you'), findsOneWidget);
+      expect(find.text('waits on 2'), findsOneWidget);
+      expect(find.text('orchestrator · waiting · 1/3'), findsOneWidget);
+    });
+
+    testWidgets('takes another goal while it works', (tester) async {
+      await connect(tester);
+      tui.sessions([lead()]);
+      await tester.pump();
+      await open(tester, 1);
+
+      expect(find.text('Add another goal'), findsOneWidget);
+      await tester.enterText(find.byKey(const Key('prompt')), 'and docs');
+      await tester.tap(find.byKey(const Key('send')));
+      expect(tui.sent.single, {
+        'type': 'prompt',
+        'session': 1,
+        'text': 'and docs',
+      });
+    });
+
+    testWidgets('tapping a todo opens its worker', (tester) async {
+      await connect(tester);
+      tui.sessions([
+        lead(),
+        info(2, 'hanoi', status: 'done', mood: 'done'),
+        info(3, 'readme', status: 'needs you', mood: 'needs'),
+      ]);
+      tui.entries(3, 0, [
+        {
+          'kind': 'prompt',
+          'text': 'Write a README',
+          'fromPhone': false,
+          'from': 'hanoi',
+        },
+      ]);
+      await tester.pump();
+      await open(tester, 1);
+
+      await tester.tap(find.byKey(const Key('todo 2')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('> Write a README'), findsOneWidget);
+    });
+
+    testWidgets("a worker's question says who asked", (tester) async {
+      await connect(tester);
+      tui.sessions([lead()]);
+      tui.entries(1, 0, [
+        {
+          'kind': 'question',
+          'id': 4,
+          'text': 'Which license?',
+          'options': ['MIT', 'Apache 2.0'],
+          'chosen': null,
+          'from': 'readme',
+        },
+      ]);
+      await tester.pump();
+      await open(tester, 1);
+
+      expect(find.text('? readme asks: Which license?'), findsOneWidget);
+    });
+  });
+
   group('a question', () {
     Future<void> ask(WidgetTester tester) async {
       await connect(tester);

@@ -9,6 +9,7 @@ import 'package:coding_agent_in_dart/src/history.dart';
 import 'package:coding_agent_in_dart/src/messages.dart';
 import 'package:coding_agent_in_dart/src/model_provider.dart';
 import 'package:coding_agent_in_dart/src/phone.dart';
+import 'package:coding_agent_in_dart/src/plan.dart';
 import 'package:coding_agent_in_dart/src/question.dart';
 import 'package:coding_agent_in_dart/src/session.dart';
 import 'package:coding_agent_in_dart/src/tools.dart';
@@ -196,6 +197,40 @@ void main() {
         for (final s in phone.ofType('sessions').last['sessions']) s['name'],
       ];
       expect(names, ['tower hanoi', 'readme']);
+    });
+
+    test("sends an orchestrator's todos, and who asked a question", () async {
+      final readme = session(2, 'readme');
+      final plan = Plan(3);
+      plan.todos.addAll([
+        Todo(1, 'write a README')
+          ..worker = readme
+          ..status = TodoStatus.working,
+        Todo(2, 'add an example', after: [1]),
+      ]);
+      sessions.first.plan = plan;
+      sessions.add(readme);
+      final question = Question('Which license?', ['MIT'])..asker = 'readme';
+      sessions.first.entries.add(EventEntry(Asked(question)));
+
+      final phone = await Phone.connect(server);
+      await settle();
+
+      final lead = phone.ofType('sessions').last['sessions'].first;
+      expect(lead['orchestrator'], isTrue);
+      expect(lead['progress'], '0/2');
+      expect(lead['todos'], [
+        {
+          'id': 1,
+          'title': 'write a README',
+          'status': 'working',
+          'worker': 'readme',
+          'workerId': 2,
+        },
+        {'id': 2, 'title': 'add an example', 'status': 'waits on 1'},
+      ]);
+      final asked = phone.ofType('entries').first['entries'].single;
+      expect(asked['from'], 'readme');
     });
 
     test(

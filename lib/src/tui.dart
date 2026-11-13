@@ -13,6 +13,7 @@ import 'history.dart';
 import 'messages.dart';
 import 'model_provider.dart';
 import 'phone.dart';
+import 'plan.dart';
 import 'question.dart';
 import 'sandbox.dart';
 import 'session.dart';
@@ -33,13 +34,36 @@ const _railWidth = 8;
 const _railBelow = 110;
 
 /// The commands that work while the session is busy.
-const _anytime = {'/new', '/settings', '/exit', '/phone'};
+const _anytime = {'/new', '/settings', '/exit', '/phone', '/todos', '/stop'};
 
 /// The commands the phone can't send: they belong to the terminal.
 const _terminalOnly = {'/exit', '/settings', '/phone'};
 
 // How many of a tool's last output lines show under it.
 const _outputRows = 8;
+
+// How many todos the panel shows; the rest scroll off as they close.
+const _todoRows = 6;
+
+// The single view's header: its box, then a blank line.
+const _headerRows = 5;
+
+/// The todos the panel shows: all of them, or a window that starts at the
+/// first one still open.
+List<Todo> visibleTodos(Plan plan) {
+  final todos = plan.todos;
+  if (todos.length <= _todoRows) return todos;
+  final open = todos.indexWhere((t) => t.open);
+  final start = (open < 0 ? todos.length : open).clamp(
+    0,
+    todos.length - _todoRows,
+  );
+  return todos.sublist(start, start + _todoRows);
+}
+
+/// 75 seconds -> "1:15".
+String clock(Duration d) =>
+    '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 
 /// 3318 -> "3,318".
 String grouped(int n) =>
@@ -115,6 +139,13 @@ class _Row extends _Hit {
   const _Row(this.session);
 
   final Session session;
+}
+
+/// A row of an orchestrator's todo panel.
+class _TodoRow extends _Hit {
+  const _TodoRow(this.todo);
+
+  final Todo todo;
 }
 
 /// A pane, or its title bar when [title], where a drag starts.
@@ -216,25 +247,43 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       Agent(
         component.provider,
         _tools(session),
-        system: _system(),
+        system: _system(session),
         conversation: conversation,
       );
 
   // With the sandbox on, the tools run inside it, and runCommand comes with
   // them. Until it has started, the file tools are there for the first
   // request to name; _run waits for the sandbox before sending one.
+  // An orchestrator reads and runs, but leaves every change to a worker,
+  // so each one sits in a session that can /undo it.
   List<Tool> _tools(Session session) => [
-    if (_settings.sandbox && _sandbox != null)
-      ..._sandbox!.tools(history: session.history)
-    else
-      ...fileTools(history: session.history),
+    for (final tool in [
+      if (_settings.sandbox && _sandbox != null)
+        ..._sandbox!.tools(history: session.history)
+      else
+        ...fileTools(history: session.history),
+    ])
+      // an orchestrator reads and checks; its workers change things
+      if (session.plan == null)
+        tool
+      else if (tool.name == 'runCommand')
+        checkTool(tool)
+      else if (tool.name != 'updateFile')
+        tool,
     askUserTool,
+    if (session.plan case final plan?) ...planTools(plan),
     ...teamTools(this, () => session),
   ];
 
-  String _system() => [
-    systemPrompt,
-    if (_settings.sandbox) sandboxPrompt,
+  String _system(Session session) => [
+    switch (session.plan) {
+      null => systemPrompt,
+      final plan => orchestratorPrompt(
+        limit: plan.limit,
+        canRun: _settings.sandbox,
+      ),
+    },
+    if (_settings.sandbox && session.plan == null) sandboxPrompt,
     teamPrompt,
   ].join('\n\n');
 
@@ -244,7 +293,7 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     for (final session in _sessions) {
       session.agent
         ..tools = _tools(session)
-        ..system = _system();
+        ..system = _system(session);
       if (note != null && session.agent.conversation.isNotEmpty) {
         session.agent.note(note);
       }
@@ -448,6 +497,13 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     for (final (i, box) in boxes.indexed) {
       final dx = x - _mainLeft - box.x, dy = y - box.y;
       if (dx >= 0 && dx < box.w && dy >= 0 && dy < box.h) {
+        // a todo's row, under the panel's summary line
+        if (shown[i].plan case final plan? when plan.todos.isNotEmpty) {
+          final top = shown.length == 1 ? _headerRows : 1;
+          final rows = visibleTodos(plan);
+          final row = dy - top - 1;
+          if (row >= 0 && row < rows.length) return _TodoRow(rows[row]);
+        }
         return _Pane(shown[i], title: shown.length > 1 && dy == 0);
       }
     }
@@ -488,6 +544,10 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       switch (pressed) {
         case _Fold():
           setState(() => _folded = !_folded);
+        case _TodoRow(:final todo):
+          if (todo.worker case final worker? when _sessions.contains(worker)) {
+            _switchTo(worker);
+          }
         case _Row(:final session) || _Pane(:final session):
           _switchTo(session);
         case null:
@@ -525,8 +585,18 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     bool fromPhone = false,
   }) async {
     final text = prompt.trim();
+    if (text.isEmpty) return;
+    // a busy orchestrator takes another goal for when its turn ends
+    if (session.busy && session.plan != null && !text.startsWith('/')) {
+      if (!fromPhone) session.input.clear();
+      setState(() {
+        session.entries.add(PromptEntry(text, fromPhone: fromPhone));
+        session.inbox.add(Mail(text, null));
+      });
+      return;
+    }
     // while a session works, it can still open another session
-    if (text.isEmpty || session.busy && !_anytime.contains(text)) return;
+    if (session.busy && !_anytime.contains(text)) return;
     if (fromPhone && _terminalOnly.contains(text)) return;
     if (!fromPhone) session.input.clear();
 
@@ -566,6 +636,16 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       case '/phone':
         await _startPhone(session);
         return;
+      case '/todos':
+        _showTodos(session);
+        return;
+      case '/stop':
+        _stop(session);
+        return;
+    }
+    if (text == '/orchestrate' || text.startsWith('/orchestrate ')) {
+      await _orchestrate(session, text.substring(12).trim());
+      return;
     }
     if (text.startsWith('/new ')) {
       await _newFor(session, text.substring(5).trim());
@@ -682,23 +762,42 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     }
 
     if (!mounted) return;
+    final boss = session.startedBy;
     setState(() {
       session.busy = false;
-      session.setMood(failed ? Mood.error : Mood.done);
+      // an orchestrator keeps working while its workers do, and a
+      // worker's question it shows still needs the user
+      session.setMood(switch (session) {
+        _ when failed => Mood.error,
+        Session(question: _?) => Mood.needs,
+        Session(:final plan?) when plan.running => Mood.working,
+        _ => Mood.done,
+      });
+      // a worker's todo waits for its orchestrator to check it
+      if (boss?.plan?.of(session) case final todo?
+          when todo.status == TodoStatus.working) {
+        todo.status = TodoStatus.checking;
+      }
     });
-    // messages that came while it worked, one turn each
     // a session started by another tells it how the work went, unless
     // that one waits on it and gets the reply from waitFor
-    final boss = session.startedBy;
     if (boss != null &&
         identical(from, boss) &&
         !boss.waitingOn.contains(session) &&
         _sessions.contains(boss)) {
       _report(boss, session.lastReply ?? '(no reply)', session);
     }
+    // messages that came while it worked, one turn each; the user's goals
+    // were on screen already
     if (session.inbox.isNotEmpty) {
       final mail = session.inbox.removeAt(0);
-      await _run(session, mail.text, from: mail.from, report: mail.report);
+      await _run(
+        session,
+        mail.text,
+        from: mail.from,
+        report: mail.report,
+        echo: mail.from != null,
+      );
     } else {
       session.settle();
     }
@@ -795,7 +894,9 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     await _run(fresh, prompt, echo: false);
   }
 
-  // Shows the picker until the question is answered, here or elsewhere.
+  // Shows the picker until the question is answered, here or elsewhere. A
+  // worker's question shows in its orchestrator too, so the user answers
+  // it where they're watching.
   void _ask(Session session, Question question) {
     session
       ..question = question
@@ -813,7 +914,149 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
         session.answerInput.clear();
       });
     });
+
+    final boss = session.startedBy;
+    if (boss == null || boss.plan == null || boss.question != null) return;
+    question.asker = session.name;
+    final before = boss.mood;
+    boss
+      ..question = question
+      ..pick = 0
+      ..typing = false
+      ..entries.add(EventEntry(Asked(question)))
+      ..setMood(Mood.needs);
+    question.answer.then((_) {
+      if (!mounted || !identical(boss.question, question)) return;
+      setState(() {
+        boss
+          ..question = null
+          ..typing = false
+          ..setMood(boss.busy || boss.plan!.running ? Mood.working : before);
+        boss.answerInput.clear();
+      });
+    });
   }
+
+  // ---- orchestrators ----
+
+  // /orchestrate <goal>: asks how many workers may run at once, then the
+  // session plans the goal and hands it out. An empty session becomes the
+  // orchestrator; otherwise a new one opens for it.
+  Future<void> _orchestrate(Session from, String goal) async {
+    if (goal.isEmpty) {
+      setState(
+        () => from.entries.add(
+          const NoteEntry(
+            'Give the orchestrator a goal, like /orchestrate add tests for '
+            'lib/src/diff.dart',
+          ),
+        ),
+      );
+      return;
+    }
+    final fresh = from.entries.isEmpty && !from.busy && from.plan == null;
+    final session = fresh ? from : _newSession();
+    final question = Question('How many workers should work at once?', [
+      '3',
+      '2',
+      '5',
+    ]);
+    setState(() {
+      if (!fresh) {
+        _sessions.add(session);
+        _active = session;
+      }
+      session
+        ..name = sessionName(goal)
+        ..named = true
+        ..entries.add(PromptEntry('/orchestrate $goal'))
+        ..entries.add(EventEntry(Asked(question)));
+      _ask(session, question);
+    });
+
+    final answer = await question.answer;
+    if (!mounted) return;
+    final n = int.tryParse(RegExp(r'\d+').firstMatch(answer)?[0] ?? '');
+    final limit = (n ?? 3).clamp(1, mostSessions - 1);
+    setState(() {
+      session.plan = Plan(limit);
+      session.agent
+        ..tools = _tools(session)
+        ..system = _system(session);
+      session.entries.add(
+        NoteEntry(
+          'Orchestrator: it plans the goal as todos and gives each to a '
+          'worker, $limit at once. Type another goal any time; it runs '
+          'after the step it is on.',
+        ),
+      );
+    });
+    await _run(session, goal, echo: false);
+  }
+
+  // /todos: the plan, written into the chat.
+  void _showTodos(Session session) {
+    final plan = session.plan;
+    setState(() {
+      session.entries.add(const PromptEntry('/todos'));
+      session.entries.add(
+        plan == null || plan.todos.isEmpty
+            ? NoteEntry(
+                plan == null
+                    ? 'Only an orchestrator has todos. Start one with '
+                          '/orchestrate <goal>.'
+                    : 'No todos yet.',
+              )
+            : NoteEntry(
+                'Todos · ${plan.done} of ${plan.todos.length} done',
+                detail: [
+                  for (final todo in plan.todos)
+                    '${_todoIcon(todo, plan)} ${todo.id} ${todo.title} · '
+                        '${todo.worker?.name ?? 'no worker'} · '
+                        '${todo.label(plan)}',
+                ].join('\n'),
+              ),
+      );
+    });
+  }
+
+  // /stop: nothing new is handed out. Workers finish the step they're on.
+  void _stop(Session session) {
+    final plan = session.plan;
+    setState(() {
+      session.entries.add(const PromptEntry('/stop'));
+      if (plan == null) {
+        session.entries.add(const NoteEntry('Only an orchestrator stops.'));
+        return;
+      }
+      plan.stopped = true;
+      for (final todo in plan.todos) {
+        if (todo.status == TodoStatus.pending) {
+          todo
+            ..status = TodoStatus.failed
+            ..note = 'stopped';
+        }
+      }
+      session.agent.note(
+        '[The user ran /stop. The todos not handed out yet are failed, and '
+        'nothing new can start. Report what was done.]',
+      );
+      session.entries.add(
+        const NoteEntry(
+          'Stopped: no new todos start. Workers finish the step they are on.',
+        ),
+      );
+    });
+  }
+
+  static String _todoIcon(Todo todo, Plan plan) => switch (todo.status) {
+    TodoStatus.working when todo.worker?.question != null => '?',
+    TodoStatus.pending => '○',
+    TodoStatus.working => '●',
+    TodoStatus.checking => '◐',
+    TodoStatus.done => '✓',
+    TodoStatus.failed => '×',
+  };
 
   bool _onAskKey(Session session, KeyboardEvent event) {
     final question = session.question!;
@@ -1039,7 +1282,12 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
   Component _sessionRow(Session session, AppColorsTheme colors) {
     final active = identical(session, _active);
     final indent = session.depth == 0 ? '' : '${'  ' * (session.depth - 1)}└ ';
-    final room = _sidebarWidth - 4 - 8 - session.status.length - indent.length;
+    final status = switch (session.plan) {
+      final plan? when plan.todos.isNotEmpty =>
+        '${session.status} · ${plan.progress}',
+      _ => session.status,
+    };
+    final room = _sidebarWidth - 4 - 8 - status.length - indent.length;
     final name = session.name.length > room
         ? '${session.name.substring(0, room - 1)}…'
         : session.name;
@@ -1068,7 +1316,7 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
         ),
         Text(' · ', style: TextStyle(color: colors.outline)),
         Text(
-          session.status,
+          status,
           style: TextStyle(
             color: session.mood == Mood.needs
                 ? colors.accent
@@ -1142,6 +1390,8 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _header(session, colors),
+        if (session.plan case final plan? when plan.todos.isNotEmpty)
+          _todoPanel(session, plan, colors),
         Expanded(child: _transcript(session, colors)),
         _status(session, colors),
         _bottom(session, colors, boxed: true),
@@ -1186,11 +1436,118 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (session.plan case final plan? when plan.todos.isNotEmpty)
+            _todoPanel(session, plan, colors),
           Expanded(child: _transcript(session, colors)),
           _status(session, colors),
           _bottom(session, colors, boxed: false),
         ],
       ),
+    );
+  }
+
+  // An orchestrator's todos, pinned above its chat: a line that sums them
+  // up, then a row each, with its worker, time and cost.
+  Component _todoPanel(Session boss, Plan plan, AppColorsTheme colors) {
+    final now = plan.now();
+    final workers = {for (final t in plan.todos) ?t.worker};
+    final total = workers.fold(boss.spent, (sum, w) => sum + w.spent);
+    final rows = visibleTodos(plan);
+    final hidden = plan.todos.length - rows.length;
+    final quiet = TextStyle(color: colors.secondary);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 1),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text(
+                ' Todos',
+                style: TextStyle(
+                  color: colors.accent,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(
+                ' · ${plan.done} of ${plan.todos.length} done · '
+                '${clock(plan.elapsed)}'
+                '${_price == null ? '' : ' · ${dollars(total)} in all'}',
+                style: quiet,
+              ),
+            ],
+          ),
+          for (final todo in rows) _todoRow(todo, plan, now, colors),
+          if (hidden > 0)
+            Text('   … $hidden more · /todos lists them all', style: quiet),
+          Divider(color: colors.outline),
+        ],
+      ),
+    );
+  }
+
+  Component _todoRow(
+    Todo todo,
+    Plan plan,
+    DateTime now,
+    AppColorsTheme colors,
+  ) {
+    final asks = todo.worker?.question != null;
+    final label = todo.label(plan);
+    final time = switch (todo.started) {
+      null => null,
+      final started => clock((todo.finished ?? now).difference(started)),
+    };
+    final right = [
+      ?todo.worker?.name,
+      if (todo.status != TodoStatus.done) label,
+      if (todo.status == TodoStatus.working && !asks ||
+          todo.status == TodoStatus.done)
+        ?time,
+      if (_price != null && todo.worker != null) dollars(todo.worker!.spent),
+    ].join('  ');
+    final iconColor = switch (todo.status) {
+      _ when asks => colors.accent,
+      TodoStatus.done => colors.tool,
+      TodoStatus.failed => colors.error,
+      TodoStatus.working => colors.accent,
+      TodoStatus.checking => colors.focus,
+      TodoStatus.pending => colors.secondary,
+    };
+
+    return Row(
+      children: [
+        Text(
+          ' ${_todoIcon(todo, plan)} ',
+          style: TextStyle(
+            color: iconColor,
+            fontWeight: asks ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+        Text('${todo.id} ', style: TextStyle(color: colors.secondary)),
+        Expanded(
+          child: Text(
+            todo.title,
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: todo.status == TodoStatus.pending
+                  ? colors.secondary
+                  : colors.primary,
+            ),
+          ),
+        ),
+        Text(
+          '  $right ',
+          style: TextStyle(
+            color: asks ? colors.accent : colors.secondary,
+            fontWeight: asks ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
+      ],
     );
   }
 
@@ -1207,6 +1564,20 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
 
   // What's under the chat: the input, or the question's picker, or the
   // settings for the session that opened them.
+  // The input's hint, with as many of [commands] as fit in its box: the
+  // ones you need least go first.
+  String _hint(String lead, List<String> commands) {
+    const least = ['/clear', '/compact', '/phone', '/fork', '/undo', '/new'];
+    final room = _mainWidth - 6;
+    final shown = [...commands];
+    String line() => shown.isEmpty ? lead : '$lead · ${shown.join(' ')}';
+    while (line().length > room && shown.isNotEmpty) {
+      final drop = least.where(shown.contains).firstOrNull;
+      drop == null ? shown.removeAt(0) : shown.remove(drop);
+    }
+    return line();
+  }
+
   Component _bottom(
     Session session,
     AppColorsTheme colors, {
@@ -1231,10 +1602,29 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       controller: session.input,
       focused: active,
       onSubmitted: (prompt) => _submit(session, prompt),
-      placeholder: boxed
-          ? 'Ask anything · /new /fork /undo /phone /compact /clear '
-                '/settings /exit'
-          : 'Ask anything',
+      placeholder: switch ((boxed, session.plan != null)) {
+        (true, true) => _hint('Add another goal', const [
+          '/todos',
+          '/stop',
+          '/new',
+          '/phone',
+          '/settings',
+          '/exit',
+        ]),
+        (false, true) => 'Add another goal',
+        (true, false) => _hint('Ask anything', const [
+          '/new',
+          '/orchestrate',
+          '/fork',
+          '/undo',
+          '/phone',
+          '/compact',
+          '/clear',
+          '/settings',
+          '/exit',
+        ]),
+        (false, false) => 'Ask anything',
+      },
       placeholderStyle: TextStyle(color: colors.secondary),
       style: TextStyle(color: colors.primary),
       cursorColor: colors.focus,
@@ -1373,7 +1763,11 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Term(mood: session.mood, frame: session.frame),
+          Term(
+            mood: session.mood,
+            frame: session.frame,
+            lead: session.plan != null,
+          ),
           const SizedBox(width: 2),
           Expanded(
             child: Column(
@@ -1381,13 +1775,17 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
               children: [
                 Row(
                   children: [
+                    Text(
+                      'coding_agent_in_dart',
+                      style: TextStyle(
+                        color: colors.accent,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                     Expanded(
                       child: Text(
-                        'coding_agent_in_dart',
-                        style: TextStyle(
-                          color: colors.accent,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        session.plan == null ? '' : ' · orchestrator',
+                        style: TextStyle(color: colors.secondary),
                       ),
                     ),
                     ..._counters(session, colors),
@@ -1460,12 +1858,21 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
   Component _status(Session session, AppColorsTheme colors) {
     return SizedBox(
       height: 1,
-      child: session.busy && session.question == null
-          ? Text(
-              '${face(Mood.working, session.frame)} Thinking…',
-              style: TextStyle(color: colors.accent),
-            )
-          : const Text(''),
+      child: switch (session) {
+        Session(question: _?) => const Text(''),
+        Session(busy: true) => Text(
+          '${face(Mood.working, session.frame)} Thinking…',
+          style: TextStyle(color: colors.accent),
+        ),
+        Session(:final plan?) when plan.running => Text(
+          '${face(Mood.working, session.frame)} '
+          '${plan.working.length} '
+          '${plan.working.length == 1 ? 'worker is' : 'workers are'} '
+          'working · type to add a goal',
+          style: TextStyle(color: colors.accent),
+        ),
+        _ => const Text(''),
+      },
     );
   }
 
@@ -1593,7 +2000,9 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
             ),
             Expanded(
               child: Text(
-                question.text,
+                question.asker != null && question.asker != session.name
+                    ? '${question.asker} asks: ${question.text}'
+                    : question.text,
                 style: TextStyle(
                   color: colors.primary,
                   fontWeight: FontWeight.bold,
