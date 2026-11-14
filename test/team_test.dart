@@ -10,6 +10,9 @@ import 'package:test/test.dart';
 
 class NoProvider implements ModelProvider {
   @override
+  String get name => 'Gemini';
+
+  @override
   Future<Message> generate(
     List<Message> messages, {
     List<Tool> tools = const [],

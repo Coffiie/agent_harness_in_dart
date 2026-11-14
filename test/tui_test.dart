@@ -17,6 +17,9 @@ import 'package:nocterm/nocterm.dart';
 import 'package:test/test.dart';
 
 class FakeProvider implements ModelProvider {
+  @override
+  String get name => 'Gemini';
+
   FakeProvider(this.replies);
 
   final List<Message> replies;
@@ -42,6 +45,9 @@ class FakeProvider implements ModelProvider {
 /// chat gets that key's replies in order. A gate holds a chat's first reply
 /// until it completes.
 class ScriptedProvider implements ModelProvider {
+  @override
+  String get name => 'Gemini';
+
   ScriptedProvider(this.replies, {Map<String, Future<void>> gates = const {}})
     : gates = Map.of(gates);
 
@@ -83,6 +89,9 @@ Message say(String text) => Message(Role.assistant, [TextPart(text)]);
 /// Holds every reply until the test completes [reply], so the test can look
 /// at the screen while the agent works.
 class HeldProvider implements ModelProvider {
+  @override
+  String get name => 'Gemini';
+
   final reply = Completer<Message>();
 
   @override
@@ -97,6 +106,9 @@ class HeldProvider implements ModelProvider {
 }
 
 class FailingProvider implements ModelProvider {
+  @override
+  String get name => 'Gemini';
+
   @override
   Future<Message> generate(
     List<Message> messages, {
@@ -121,6 +133,26 @@ void main() {
 
       expect(tester.terminalState, containsText('> capital of France?'));
       expect(tester.terminalState, containsText('Paris'));
+    });
+  });
+
+  test('a plan says so in place of the cost, with a first note', () async {
+    await testNocterm('plan', (tester) async {
+      await tester.pumpComponent(
+        HarnessApp(
+          provider: FakeProvider([say('hi')]),
+          model: 'gpt-test',
+          plan: 'ChatGPT plan',
+          welcome: "You're using your ChatGPT plan.",
+        ),
+      );
+
+      expect(tester.terminalState, containsText('using ChatGPT plan'));
+      expect(tester.terminalState, isNot(containsText('spent')));
+      expect(
+        tester.terminalState,
+        containsText("You're using your ChatGPT plan."),
+      );
     });
   });
 
@@ -721,6 +753,16 @@ void main() {
       ToolCall('updateFile', {'path': path, 'content': content}),
     ]);
 
+    // The agent's turn runs a real file write, so it can take more than a
+    // couple of frames on a busy machine: pump until its reply shows.
+    Future<void> answered(NoctermTester tester, String reply) async {
+      for (var i = 0; i < 400; i++) {
+        if (tester.terminalState.containsText(' $reply')) return;
+        await Future<void>.delayed(const Duration(milliseconds: 5));
+        await tester.pump();
+      }
+    }
+
     test('puts the file back, shows the diff and tells the model', () async {
       final path = '${dir.path}/a.txt';
       File(path).writeAsStringSync('one\ntwo\n');
@@ -735,8 +777,7 @@ void main() {
 
         await tester.enterText('edit it');
         await tester.sendEnter();
-        await tester.pump();
-        await tester.pump();
+        await answered(tester, 'changed');
         expect(File(path).readAsStringSync(), 'one\n2\n');
 
         await tester.enterText('/undo');
@@ -776,8 +817,7 @@ void main() {
 
         await tester.enterText('make a file');
         await tester.sendEnter();
-        await tester.pump();
-        await tester.pump();
+        await answered(tester, 'made it');
         await tester.enterText('/undo');
         await tester.sendEnter();
         await tester.pump();
@@ -819,8 +859,7 @@ void main() {
 
         await tester.enterText('edit');
         await tester.sendEnter();
-        await tester.pump();
-        await tester.pump();
+        await answered(tester, 'ok');
         await tester.enterText('/clear');
         await tester.sendEnter();
         await tester.pump();

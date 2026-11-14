@@ -58,22 +58,30 @@ class Compacted extends AgentEvent {
 /// The provider's rate limit, or a busy provider, stopped a request. The
 /// agent waits [wait], then tries it again.
 class RetryWait extends AgentEvent {
-  const RetryWait(this.wait, this.message, {this.status = 429});
+  const RetryWait(
+    this.wait,
+    this.message, {
+    this.status = 429,
+    required this.provider,
+  });
 
   final Duration wait;
   final String message;
 
   /// 429 for the rate limit; 5xx when the provider was busy.
   final int status;
+
+  /// The provider's name, like Gemini.
+  final String provider;
 }
 
 /// What the TUI, the phone and the CLI say about a [RetryWait].
 String retryNote(RetryWait retry) {
   final then = 'waiting ${retry.wait.inSeconds}s, then trying again';
   return switch (retry.status) {
-    429 => "Gemini's rate limit: $then",
-    408 => "Gemini didn't answer: $then",
-    final status => 'Gemini is busy ($status): $then',
+    429 => "${retry.provider}'s rate limit: $then",
+    408 => "${retry.provider} didn't answer: $then",
+    final status => '${retry.provider} is busy ($status): $then',
   };
 }
 

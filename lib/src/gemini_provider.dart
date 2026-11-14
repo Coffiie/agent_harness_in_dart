@@ -27,6 +27,9 @@ class GeminiProvider implements ModelProvider {
   final http.Client _client;
   final String model;
 
+  @override
+  String get name => 'Gemini';
+
   /// How long a request may take. After that it counts as lost, and the
   /// agent tries again, the way it does when Gemini is busy.
   final Duration timeout;

@@ -8,6 +8,9 @@ import 'package:coding_agent_in_dart/src/usage.dart';
 import 'package:test/test.dart';
 
 class FakeProvider implements ModelProvider {
+  @override
+  String get name => 'Gemini';
+
   FakeProvider(this.replies);
 
   final List<Message> replies;
@@ -428,6 +431,9 @@ void main() {
 
 /// Throws [failures] one call at a time, then answers [then].
 class ScriptedFailures implements ModelProvider {
+  @override
+  String get name => 'Gemini';
+
   ScriptedFailures(this.failures, {required this.then});
 
   final List<Exception> failures;

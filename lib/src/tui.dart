@@ -182,7 +182,18 @@ class HarnessApp extends StatefulComponent {
     this.onQuestion,
     this.phonePort = 4545,
     this.startSandbox = _startSandbox,
+    this.plan,
+    this.welcome,
   });
+
+  /// The plan the model calls are paid from, like "ChatGPT plan", when
+  /// they come out of a subscription instead of money. The header says so
+  /// in place of the cost.
+  final String? plan;
+
+  /// A note the first session opens with, like the one that says requests
+  /// use the ChatGPT plan.
+  final String? welcome;
 
   /// Starts the sandbox the agents' tools run in, when /settings turns it
   /// on or the saved settings have it on. With it off, the tools run on
@@ -418,6 +429,9 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     super.initState();
     _active = _newSession();
     _sessions.add(_active);
+    if (component.welcome case final welcome?) {
+      _active.entries.add(NoteEntry(welcome));
+    }
     if (_settings.sandbox) unawaited(_setSandbox(true));
   }
 
@@ -844,7 +858,12 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       _active = fresh;
       fresh.entries
         ..add(PromptEntry(prompt))
-        ..add(NoteEntry('Asking Gemini whether this needs ${from.name}…'));
+        ..add(
+          NoteEntry(
+            'Asking ${component.provider.name} whether this needs '
+            '${from.name}…',
+          ),
+        );
       fresh.busy = true;
       fresh.setMood(Mood.working);
     });
@@ -872,7 +891,8 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
         fresh.agent = _agent(fresh, Agent.summarized(summary));
         fresh.entries.add(
           NoteEntry(
-            'Gemini says this needs ${from.name}, so a summary of it came '
+            '${component.provider.name} says this needs ${from.name}, so a '
+            'summary of it came '
             'along:',
             detail: summary
                 .replaceFirst('[CompactedSummaryFromModel]', '')
@@ -886,7 +906,8 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
       } else {
         fresh.entries.add(
           NoteEntry(
-            "Gemini says this doesn't need ${from.name}, so it starts fresh.",
+            "${component.provider.name} says this doesn't need ${from.name}, "
+            'so it starts fresh.',
           ),
         );
       }
@@ -1837,13 +1858,20 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
         '${grouped(session.context)} tok',
         style: TextStyle(color: colors.primary),
       ),
-      Text('  spent ', style: label),
-      Text(
-        _price == null
-            ? 'no price for ${component.model}'
-            : dollars(session.spent),
-        style: TextStyle(color: colors.accent, fontWeight: FontWeight.bold),
-      ),
+      if (component.plan case final plan?)
+        Text(
+          '  using $plan',
+          style: TextStyle(color: colors.accent, fontWeight: FontWeight.bold),
+        )
+      else ...[
+        Text('  spent ', style: label),
+        Text(
+          _price == null
+              ? 'no price for ${component.model}'
+              : dollars(session.spent),
+          style: TextStyle(color: colors.accent, fontWeight: FontWeight.bold),
+        ),
+      ],
     ];
   }
 
