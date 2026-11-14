@@ -81,7 +81,14 @@ Future<void> _chatGpt(
       "opens to OpenAI's sign-in. If it doesn't, open this:",
     );
     try {
-      await auth.signIn(onUrl: (url) => print('\n$url\n'));
+      await auth.signIn(
+        onUrl: (url) => print('\n$url\n'),
+        onRetry: () => print(
+          'OpenAI needs one more sign-in to finish setting up the app. '
+          'Your browser opens again; pick the same account. If it '
+          "doesn't open, open this:",
+        ),
+      );
     } on SignInError catch (e) {
       print('Error: $e');
       return;

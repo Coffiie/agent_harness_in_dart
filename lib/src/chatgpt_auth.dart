@@ -8,9 +8,12 @@ import 'package:http/http.dart' as http;
 
 /// Why signing in with ChatGPT didn't work, in words for the user.
 class SignInError implements Exception {
-  const SignInError(this.message);
+  const SignInError(this.message, {this.code});
 
   final String message;
+
+  /// OpenAI's error code, like invalid_grant, when it sent one.
+  final String? code;
 
   @override
   String toString() => message;
@@ -173,7 +176,25 @@ class ChatGptAuth {
 
   /// Signs in in the browser. [onUrl] gets the address first, for when the
   /// browser doesn't open on its own.
-  Future<ChatGptAccount> signIn({void Function(Uri url)? onUrl}) async {
+  ///
+  /// OpenAI can turn down the first code it issues with invalid_grant. Its
+  /// docs say to drop that code and sign in again with the client id the
+  /// registration issued, so that happens once on its own, and [onRetry]
+  /// says why the browser opens again.
+  Future<ChatGptAccount> signIn({
+    void Function(Uri url)? onUrl,
+    void Function()? onRetry,
+  }) async {
+    try {
+      return await _signInOnce(onUrl);
+    } on SignInError catch (e) {
+      if (e.code != 'invalid_grant' || _clientId == null) rethrow;
+      onRetry?.call();
+      return _signInOnce(onUrl);
+    }
+  }
+
+  Future<ChatGptAccount> _signInOnce(void Function(Uri url)? onUrl) async {
     final server = await _listen();
     try {
       final redirect = 'http://127.0.0.1:${server.port}/auth/callback';
@@ -203,9 +224,12 @@ class ChatGptAuth {
       unawaited(_openBrowser(url).catchError((_) {}));
 
       final callback = await _callback(server, state);
-      final clientId = callback['client_id'] ?? _clientId;
-      if (clientId == null) {
-        throw const SignInError("OpenAI's sign-in didn't give a client id.");
+      final clientId = _issuedClientId(callback['client_id']);
+      // kept now, so a code exchange that fails doesn't register the app
+      // a second time
+      if (_clientId == null) {
+        _clientId = clientId;
+        await save();
       }
       final tokens = await _token({
         'grant_type': 'authorization_code',
@@ -293,6 +317,29 @@ class ChatGptAuth {
     await save();
   }
 
+  // The client id a callback came back with. A first sign-in must bring
+  // the one OpenAI issued; a later one may leave it out, and can't bring
+  // another, since that would swap this account's registration.
+  String _issuedClientId(String? fromCallback) {
+    final saved = _clientId;
+    if (saved == null) {
+      if (fromCallback == null || fromCallback == 'dynamic_agent_client') {
+        throw const SignInError(
+          "OpenAI didn't finish registering the app: its sign-in came back "
+          'without a client id. Sign in again.',
+        );
+      }
+      return fromCallback;
+    }
+    if (fromCallback != null && fromCallback != saved) {
+      throw const SignInError(
+        "OpenAI's sign-in came back for a different app registration than "
+        'this one. Sign in again.',
+      );
+    }
+    return saved;
+  }
+
   Future<Map<String, dynamic>> _token(Map<String, String> form) async {
     final response = await _client.post(tokenUrl, body: form);
     final Object? json;
@@ -302,10 +349,25 @@ class ChatGptAuth {
       throw SignInError('OpenAI answered ${response.statusCode}.');
     }
     if (response.statusCode != 200 || json is! Map<String, dynamic>) {
+      // {"error": "invalid_grant", "error_description": "..."}, or the
+      // error as an object
       final error = json is Map ? json['error'] : null;
+      final code = switch (error) {
+        String code => code,
+        {'code': String code} => code,
+        {'type': String code} => code,
+        _ => null,
+      };
+      final said = switch ((json, error)) {
+        ({'error_description': String said}, _) => said,
+        (_, {'message': String said}) => said,
+        _ => null,
+      };
+      final why = [?code, if (said != null && said.isNotEmpty) said];
       throw SignInError(
         'OpenAI turned the sign-in down'
-        '${error == null ? '' : ' ($error)'}: sign in again.',
+        '${why.isEmpty ? '' : ' (${why.join(': ')})'}. Sign in again.',
+        code: code,
       );
     }
     return json;

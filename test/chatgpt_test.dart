@@ -185,6 +185,132 @@ void main() {
       expect(query['ext_agent_host_id'], hostId);
     });
 
+    test('keeps the issued client id, and signs in again with it after '
+        'invalid_grant', () async {
+      final opened = <Uri>[];
+      final forms = <Map<String, String>>[];
+      var retried = 0;
+      final auth = ChatGptAuth(
+        file,
+        port: 0,
+        clock: () => now,
+        openBrowser: browser(
+          opened,
+          // the second sign-in, with the issued id, leaves the id out
+          back: (url) => {
+            'code': 'code-${opened.length}',
+            'state': url.queryParameters['state']!,
+            if (opened.length == 1) 'client_id': issued,
+          },
+        ),
+        client: MockClient((request) async {
+          forms.add(Uri.splitQueryString(request.body));
+          if (forms.length == 1) {
+            // the client id is already saved when the exchange fails
+            expect(jsonDecode(file.readAsStringSync())['client_id'], issued);
+            return http.Response(
+              '{"error":"invalid_grant","error_description":"Invalid '
+              'authorization code"}',
+              400,
+            );
+          }
+          return http.Response(
+            jsonEncode(tokens(nonce: opened.last.queryParameters['nonce'])),
+            200,
+          );
+        }),
+      );
+
+      final signedIn = await auth.signIn(onRetry: () => retried++);
+
+      expect(retried, 1);
+      expect(opened, hasLength(2));
+      expect(opened[0].queryParameters['client_id'], 'dynamic_agent_client');
+      expect(opened[1].queryParameters['client_id'], issued);
+      expect(opened[1].queryParameters.containsKey('agent_name_hint'), isFalse);
+      expect(forms.map((f) => (f['client_id'], f['code'])), [
+        (issued, 'code-1'),
+        (issued, 'code-2'),
+      ]);
+      expect(signedIn.clientId, issued);
+    });
+
+    test('a second invalid_grant stops, with what OpenAI said', () async {
+      final opened = <Uri>[];
+      final auth = ChatGptAuth(
+        file,
+        port: 0,
+        clock: () => now,
+        openBrowser: browser(opened),
+        client: MockClient(
+          (_) async => http.Response(
+            '{"error":"invalid_grant","error_description":"Code expired"}',
+            400,
+          ),
+        ),
+      );
+      await expectLater(
+        auth.signIn(),
+        throwsA(
+          isA<SignInError>().having(
+            (e) => e.message,
+            'message',
+            'OpenAI turned the sign-in down (invalid_grant: Code expired). '
+                'Sign in again.',
+          ),
+        ),
+      );
+      expect(opened, hasLength(2));
+      expect(auth.signedIn, isFalse);
+      // the next run starts from the issued id, not a new registration
+      expect(jsonDecode(file.readAsStringSync())['client_id'], issued);
+    });
+
+    test(
+      'refuses a callback without an issued id, or with another one',
+      () async {
+        for (final (saved, back, said) in [
+          (false, <String, String>{}, "didn't finish registering"),
+          (
+            false,
+            {'client_id': 'dynamic_agent_client'},
+            "didn't finish registering",
+          ),
+          (true, {'client_id': 'oaiapp_other'}, 'different app registration'),
+        ]) {
+          if (saved) {
+            await savedAccount();
+          } else if (file.existsSync()) {
+            file.deleteSync();
+          }
+          final auth = ChatGptAuth(
+            file,
+            port: 0,
+            clock: () => now,
+            openBrowser: browser(
+              [],
+              back: (url) => {
+                'code': 'c',
+                'state': url.queryParameters['state']!,
+                ...back,
+              },
+            ),
+            client: MockClient((_) async => fail('no token request')),
+          );
+          await expectLater(
+            auth.signIn(),
+            throwsA(
+              isA<SignInError>().having(
+                (e) => e.message,
+                'message',
+                contains(said),
+              ),
+            ),
+          );
+        }
+      },
+    );
+
     test('says so when the user cancels', () async {
       final auth = ChatGptAuth(
         file,
