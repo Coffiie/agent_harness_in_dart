@@ -19,7 +19,7 @@ class HarnessPhone extends StatelessWidget {
     theme: ThemeData(
       brightness: Brightness.dark,
       scaffoldBackgroundColor: Graphite.background,
-      colorScheme: const ColorScheme.dark(
+      colorScheme: ColorScheme.dark(
         primary: Graphite.accent,
         onPrimary: Graphite.background,
         surface: Graphite.background,
@@ -27,13 +27,13 @@ class HarnessPhone extends StatelessWidget {
         outline: Graphite.outline,
         error: Graphite.error,
       ),
-      appBarTheme: const AppBarTheme(
+      appBarTheme: AppBarTheme(
         backgroundColor: Graphite.background,
         foregroundColor: Graphite.primary,
         elevation: 0,
         scrolledUnderElevation: 0,
       ),
-      inputDecorationTheme: const InputDecorationTheme(
+      inputDecorationTheme: InputDecorationTheme(
         border: OutlineInputBorder(
           borderSide: BorderSide(color: Graphite.outline),
         ),
