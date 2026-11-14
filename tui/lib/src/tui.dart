@@ -1605,7 +1605,7 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
     bool active, {
     required bool boxed,
   }) {
-    final field = TextField(
+    final field = _wrappingField(
       controller: session.input,
       focused: active,
       onSubmitted: (prompt) => _submit(session, prompt),
@@ -1632,18 +1632,8 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
         ]),
         (false, false) => 'Ask anything',
       },
-      placeholderStyle: TextStyle(color: colors.secondary),
-      style: TextStyle(color: colors.primary),
-      cursorColor: colors.focus,
-      decoration: boxed
-          ? InputDecoration(
-              border: BoxBorder.all(
-                color: colors.focus,
-                style: BoxBorderStyle.rounded,
-              ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 1),
-            )
-          : null,
+      colors: colors,
+      border: boxed ? colors.focus : null,
     );
     if (boxed) return field;
 
@@ -1659,21 +1649,46 @@ class _HarnessAppState extends State<HarnessApp> implements Team {
   }
 
   Component _answerField(Session session, AppColorsTheme colors, bool active) {
-    return TextField(
+    return _wrappingField(
       controller: session.answerInput,
       focused: active,
       onSubmitted: (answer) => _submitAnswer(session, answer),
       placeholder: 'Type your answer · Enter sends it · empty goes back',
+      colors: colors,
+      border: colors.accent,
+    );
+  }
+
+  // A text field that wraps onto a new line when the text reaches the edge,
+  // and grows to fit it. nocterm's own border holds a field to one line, so
+  // the box is drawn here, around the field, and grows with it. Enter still
+  // sends. Shift+Enter starts a new line in terminals that speak the kitty
+  // keyboard protocol, like Ghostty; others send it as a plain Enter.
+  Component _wrappingField({
+    required TextEditingController controller,
+    required bool focused,
+    required ValueChanged<String> onSubmitted,
+    required String placeholder,
+    required AppColorsTheme colors,
+    Color? border,
+  }) {
+    final field = TextField(
+      controller: controller,
+      focused: focused,
+      maxLines: null,
+      onSubmitted: onSubmitted,
+      placeholder: placeholder,
       placeholderStyle: TextStyle(color: colors.secondary),
       style: TextStyle(color: colors.primary),
       cursorColor: colors.focus,
-      decoration: InputDecoration(
-        border: BoxBorder.all(
-          color: colors.accent,
-          style: BoxBorderStyle.rounded,
-        ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 1),
+    );
+    if (border == null) return field;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 1),
+      decoration: BoxDecoration(
+        border: BoxBorder.all(color: border, style: BoxBorderStyle.rounded),
       ),
+      child: field,
     );
   }
 
