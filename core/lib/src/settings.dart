@@ -4,11 +4,19 @@ import 'dart:io';
 import 'design_system/palette.dart';
 import 'usage.dart';
 
-/// Gemini's standard rates in dollars per million tokens, from
-/// https://ai.google.dev/gemini-api/docs/pricing (November 2026). Thinking
+/// Standard rates in dollars per million tokens, November 2026. Thinking
 /// tokens are billed as output.
+/// - Gemini: https://ai.google.dev/gemini-api/docs/pricing
+/// - DeepSeek: https://api-docs.deepseek.com/quick_start/pricing, at its
+///   peak rate. Off-peak hours cost half, so this is the most it costs.
+/// - Kimi: https://platform.moonshot.ai/docs/pricing/chat
+/// - OpenRouter's free models cost nothing.
 const defaultPrices = {
   'gemini-3.1-flash-lite': Price(input: 0.25, cachedInput: 0.025, output: 1.5),
+  'deepseek-flash': Price(input: 0.3, cachedInput: 0.006, output: 1.2),
+  'deepseek-v4-pro': Price(input: 1.32, cachedInput: 0.044, output: 3.96),
+  'kimi-k2.7-code': Price(input: 0.95, cachedInput: 0.19, output: 4),
+  'nvidia/nemotron-3-ultra-550b-a55b:free': Price(input: 0, output: 0),
 };
 
 /// What the user picked in /settings, plus the price of each model, saved as

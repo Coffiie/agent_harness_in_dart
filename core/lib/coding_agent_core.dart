@@ -8,6 +8,7 @@ export 'src/chatgpt_auth.dart';
 export 'src/chatgpt_provider.dart';
 export 'src/design_system/palette.dart';
 export 'src/design_system/term.dart';
+export 'src/compatible_provider.dart';
 export 'src/diff.dart';
 export 'src/events.dart';
 export 'src/gemini_provider.dart';
