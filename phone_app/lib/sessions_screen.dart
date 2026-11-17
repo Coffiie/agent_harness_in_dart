@@ -25,7 +25,7 @@ class SessionsScreen extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 8),
               itemCount: link.sessions.length,
               separatorBuilder: (_, _) =>
-                  const Divider(height: 1, color: Graphite.surface),
+                  Divider(height: 1, color: Graphite.surface),
               itemBuilder: (context, i) {
                 final session = link.sessions[i];
                 return ListTile(
@@ -36,7 +36,11 @@ class SessionsScreen extends StatelessWidget {
                   ),
                   title: Text(session.name, style: mono),
                   subtitle: Text(
-                    [session.status, ?session.spent].join(' · '),
+                    [
+                      session.status,
+                      ?session.progress,
+                      ?session.spent,
+                    ].join(' · '),
                     style: mono.copyWith(
                       color: session.status == 'needs you'
                           ? Graphite.accent
@@ -44,10 +48,7 @@ class SessionsScreen extends StatelessWidget {
                       fontSize: 12,
                     ),
                   ),
-                  trailing: const Icon(
-                    Icons.chevron_right,
-                    color: Graphite.outline,
-                  ),
+                  trailing: Icon(Icons.chevron_right, color: Graphite.outline),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
                       builder: (_) => ChatScreen(link: link, id: session.id),
