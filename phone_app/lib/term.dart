@@ -1,23 +1,25 @@
 import 'dart:async';
 
+import 'package:coding_agent_core/design_system.dart';
 import 'package:flutter/material.dart';
 
-/// The TUI's graphite dark theme.
+/// The TUI's graphite dark theme, from core's design system.
 abstract final class Graphite {
-  static const primary = Color(0xFFE8E8E8);
-  static const secondary = Color(0xFF8C8C8C);
-  static const background = Color(0xFF000000);
-  static const surface = Color(0xFF262626);
-  static const accent = Color(0xFFFFFFFF);
-  static const outline = Color(0xFF4A4A4A);
-  static const tool = Color(0xFFC4C4C4);
-  static const error = Color(0xFFE5837A);
-  static const added = Color(0xFF1B2D21);
-  static const removed = Color(0xFF3A2120);
+  static const _palette = AppPalette.graphiteDark;
+  static final primary = Color(_palette.primary);
+  static final secondary = Color(_palette.secondary);
+  static final background = Color(_palette.primaryContainer);
+  static final surface = Color(_palette.secondaryContainer);
+  static final accent = Color(_palette.accent);
+  static final outline = Color(_palette.outline);
+  static final tool = Color(_palette.tool);
+  static final error = Color(_palette.error);
+  static final added = Color(_palette.added);
+  static final removed = Color(_palette.removed);
 }
 
 /// Monospace, like the terminal.
-const mono = TextStyle(
+final mono = TextStyle(
   fontFamily: 'Menlo',
   fontFamilyFallback: ['Courier', 'monospace'],
   color: Graphite.primary,
@@ -25,22 +27,13 @@ const mono = TextStyle(
   height: 1.35,
 );
 
-const _eyes = ['▘', '▝', '▗', '▖'];
+/// The [Mood] the TUI sent by name. One this app doesn't know shows as
+/// waiting.
+Mood moodNamed(String mood) => Mood.values.asNameMap()[mood] ?? Mood.waiting;
 
-/// Term's face for [mood] at animation [frame], as in the TUI.
-String face(String mood, int frame) => switch (mood) {
-  'waiting' => frame.isEven ? '>_' : '> ',
-  'working' => _eyes[frame % _eyes.length] * 2,
-  'done' => '^^',
-  'error' => '××',
-  'undo' => '<<',
-  'needs' => '??',
-  _ => '>_',
-};
-
-Color moodColor(String mood) => switch (mood) {
-  'error' => Graphite.error,
-  'undo' => Graphite.tool,
+Color moodColor(String mood) => switch (moodNamed(mood)) {
+  Mood.error => Graphite.error,
+  Mood.undo => Graphite.tool,
   _ => Graphite.accent,
 };
 
@@ -75,11 +68,7 @@ class _TickingState extends State<Ticking> {
   void _start() {
     _timer?.cancel();
     _frame = 0;
-    final every = switch (widget.mood) {
-      'working' => const Duration(milliseconds: 250),
-      'waiting' => const Duration(milliseconds: 600),
-      _ => null,
-    };
+    final every = tickEvery(moodNamed(widget.mood));
     if (every != null) {
       _timer = Timer.periodic(every, (_) => setState(() => _frame++));
     }
@@ -106,7 +95,7 @@ class MiniTerm extends StatelessWidget {
   Widget build(BuildContext context) => Ticking(
     mood: mood,
     builder: (context, frame) => Text(
-      face(mood, frame),
+      face(moodNamed(mood), frame),
       style: mono.copyWith(color: moodColor(mood), fontSize: size),
     ),
   );
@@ -122,7 +111,7 @@ class Term extends StatelessWidget {
   Widget build(BuildContext context) => Ticking(
     mood: mood,
     builder: (context, frame) => Text(
-      '▛▀▀▀▀▜\n▙ ${face(mood, frame)} ▟',
+      termRows(moodNamed(mood), frame).join('\n'),
       style: mono.copyWith(color: moodColor(mood), height: 1.0),
     ),
   );
