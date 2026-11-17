@@ -128,6 +128,70 @@ void main() {
     });
   });
 
+  group('input', () {
+    const long =
+        'Write a generic Stack class in lib/stack.dart with push, pop and '
+        'peek, then a test for each of them in test/stack_test.dart';
+
+    test(
+      'a long prompt wraps onto the next line, in a box that grows',
+      () async {
+        await testNocterm('wrap', size: const Size(80, 24), (tester) async {
+          final provider = ScriptedProvider({
+            'generic Stack': [say('Done.')],
+          });
+          await tester.pumpComponent(
+            HarnessApp(provider: provider, model: 'fake'),
+          );
+
+          await tester.enterText(long);
+          await tester.pump();
+          final screen = tester.terminalState;
+          // the start of the prompt is still on screen, and the end is on a
+          // row below it, inside the same box
+          final start = screen.findText('Write a generic Stack').single;
+          final end = screen.findText('test/stack_test.dart').single;
+          expect(end.y, start.y + 1);
+          expect(screen.getText().split('\n')[end.y + 1], contains('╰'));
+
+          await tester.sendEnter();
+          await tester.pump();
+          expect(provider.prompts['generic Stack'], [long]);
+          expect(tester.terminalState, containsText('Done.'));
+          // the box goes back to one line, with its hint
+          expect(tester.terminalState, containsText('Ask anything'));
+        });
+      },
+    );
+
+    test('Shift+Enter starts a new line, and Enter sends both', () async {
+      await testNocterm('newline', (tester) async {
+        final provider = ScriptedProvider({
+          'first line': [say('Got both.')],
+        });
+        await tester.pumpComponent(
+          HarnessApp(provider: provider, model: 'fake'),
+        );
+
+        await tester.enterText('first line');
+        await tester.sendKeyEvent(
+          KeyboardEvent(
+            logicalKey: LogicalKey.enter,
+            modifiers: ModifierKeys(shift: true),
+          ),
+        );
+        await tester.enterText('second line');
+        await tester.pump();
+        expect(tester.terminalState, isNot(containsText('Got both.')));
+
+        await tester.sendEnter();
+        await tester.pump();
+        expect(provider.prompts['first line'], ['first line\nsecond line']);
+        expect(tester.terminalState, containsText('Got both.'));
+      });
+    });
+  });
+
   test('a plan says so in place of the cost, with a first note', () async {
     await testNocterm('plan', (tester) async {
       await tester.pumpComponent(
