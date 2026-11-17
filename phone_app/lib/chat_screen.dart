@@ -111,7 +111,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _box(SessionInfo session) => SafeArea(
     top: false,
     child: Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(top: BorderSide(color: Graphite.surface)),
       ),
       padding: const EdgeInsets.fromLTRB(14, 8, 6, 8),
@@ -511,7 +511,7 @@ class TodoList extends StatelessWidget {
     return Container(
       key: const Key('todos'),
       constraints: const BoxConstraints(maxHeight: 220),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: Graphite.surface)),
       ),
       child: ListView(
