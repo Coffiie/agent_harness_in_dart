@@ -156,3 +156,8 @@ The build is also a video series on YouTube:
 
 - [Part 1](https://youtu.be/7OnyYHEyNcY)
 - [Part 2](https://youtu.be/DC6xp9vD1cs)
+- [Part 3](https://youtu.be/UPW6l1AqIYE)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
